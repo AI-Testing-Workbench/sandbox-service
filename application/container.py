@@ -293,6 +293,9 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 resource_limits=_resource_limits(params),
             )
         except Exception as exc:
+            # 创建响应丢失但远端已完成创建时，SDK 无法提供容器 ID；使用本次唯一的
+            # metadata name 找回并回收这个无法直接寻址的远端资源。
+            _cleanup_failed_remote_create(container_name)
             if _is_image_not_found_error(exc):
                 if params.image is None:
                     raise DefaultImageNotConfiguredError(
@@ -339,6 +342,51 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             created_at=created_at,
             status=ContainerStatus.PENDING,
         )
+
+
+def _cleanup_failed_remote_create(container_name: str) -> None:
+    """回收创建请求失败后可能已存在的远端容器。"""
+    try:
+        client = get_opensandbox_client()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "创建失败后初始化 OpenSandbox 清理客户端失败: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return
+    try:
+        remote_ids = client.list_container_ids(
+            metadata={
+                _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+                "name": container_name,
+            }
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "创建失败后查找远端容器失败: %s: %s: %s",
+            container_name,
+            type(exc).__name__,
+            exc,
+        )
+        return
+
+    seen_ids: set[str] = set()
+    for container_id in remote_ids:
+        if not isinstance(container_id, str) or not container_id or container_id in seen_ids:
+            continue
+        seen_ids.add(container_id)
+        try:
+            client.delete(container_id)
+        except SandboxNotFoundError:
+            continue
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "创建失败后回收远端容器失败: %s: %s: %s",
+                container_id,
+                type(exc).__name__,
+                exc,
+            )
 
 
 def _resolve_image(params: CreateContainerParams) -> str:
@@ -668,55 +716,37 @@ def query_container_ids(
 def list_orphan_container_ids() -> list[str]:
     """查询带本服务来源标记、但数据库中没有记录的远端容器。"""
     with _create_lock:
-        try:
-            remote_ids = get_opensandbox_client().list_container_ids(
-                metadata={
-                    _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
-                }
-            )
-        except Exception as exc:
-            _raise_backend_service_error("查询孤儿容器", exc)
-
-        with session_scope() as session:
-            stored_ids = set(ContainerRepository(session).list_all_ids())
-
-    orphan_ids: list[str] = []
-    seen_ids: set[str] = set()
-    for container_id in remote_ids:
-        if (
-            container_id
-            and container_id not in stored_ids
-            and container_id not in seen_ids
-        ):
-            orphan_ids.append(container_id)
-            seen_ids.add(container_id)
-    return orphan_ids
+        return _list_orphan_container_ids_locked()
 
 
 def delete_orphan_containers(container_ids: list[str]) -> None:
     """删除指定孤儿容器；单个失败不影响其他合法 ID 的处理。"""
     requested_ids = _normalise_orphan_container_ids(container_ids)
-    orphan_ids = set(list_orphan_container_ids())
     not_orphan_ids: list[str] = []
     failed_ids: list[str] = []
 
-    for container_id in requested_ids:
-        if container_id not in orphan_ids:
-            not_orphan_ids.append(container_id)
-            continue
-        try:
-            get_opensandbox_client().delete(container_id)
-        except SandboxNotFoundError:
-            # 目标在列表和删除之间消失时，最终状态已经满足。
-            continue
-        except Exception as exc:  # noqa: BLE001
-            failed_ids.append(container_id)
-            logger.error(
-                "删除孤儿容器失败: %s: %s: %s",
-                container_id,
-                type(exc).__name__,
-                exc,
-            )
+    # 将重新比对和删除放在同一创建锁中，避免新建容器在快照之后尚未
+    # 落库时被误判为孤儿。
+    with _create_lock:
+        orphan_ids = set(_list_orphan_container_ids_locked())
+        client = get_opensandbox_client()
+        for container_id in requested_ids:
+            if container_id not in orphan_ids:
+                not_orphan_ids.append(container_id)
+                continue
+            try:
+                client.delete(container_id)
+            except SandboxNotFoundError:
+                # 目标在列表和删除之间消失时，最终状态已经满足。
+                continue
+            except Exception as exc:  # noqa: BLE001
+                failed_ids.append(container_id)
+                logger.error(
+                    "删除孤儿容器失败: %s: %s: %s",
+                    container_id,
+                    type(exc).__name__,
+                    exc,
+                )
 
     if not_orphan_ids:
         details = ", ".join(not_orphan_ids)
@@ -842,6 +872,33 @@ def _normalise_orphan_container_ids(container_ids: list[str]) -> list[str]:
             result.append(normalized)
             seen.add(normalized)
     return result
+
+
+def _list_orphan_container_ids_locked() -> list[str]:
+    """在 `_create_lock` 内查询并返回孤儿 ID。"""
+    try:
+        remote_ids = get_opensandbox_client().list_container_ids(
+            metadata={
+                _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+            }
+        )
+    except Exception as exc:
+        _raise_backend_service_error("查询孤儿容器", exc)
+
+    with session_scope() as session:
+        stored_ids = set(ContainerRepository(session).list_all_ids())
+
+    orphan_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for container_id in remote_ids:
+        if (
+            container_id
+            and container_id not in stored_ids
+            and container_id not in seen_ids
+        ):
+            orphan_ids.append(container_id)
+            seen_ids.add(container_id)
+    return orphan_ids
 
 
 def _raise_backend_service_error(operation: str, exc: Exception) -> NoReturn:
