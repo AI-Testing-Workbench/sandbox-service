@@ -30,6 +30,8 @@ __all__ = [
     "AdminCreateContainerRequest",
     "AdminContainerResponse",
     "AdminContainerListResponse",
+    "OrphanContainerListResponse",
+    "OrphanContainerDeleteRequest",
     "AdminStateResponse",
     "ExpirationRequest",
     "ExpirationResponse",
@@ -151,6 +153,23 @@ class AdminContainerListResponse(BaseModel):
     """全部容器信息响应"""
 
     containers: list[AdminContainerResponse] = Field(description="全部容器完整信息")
+
+
+class OrphanContainerListResponse(BaseModel):
+    """孤儿容器 ID 列表响应"""
+
+    container_ids: list[str] = Field(description="容器 ID 列表")
+
+
+class OrphanContainerDeleteRequest(BaseModel):
+    """孤儿容器批量删除请求"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    container_ids: list[str] = Field(
+        min_length=1,
+        description="容器 ID 列表",
+    )
 
 
 class AdminStateResponse(BaseModel):

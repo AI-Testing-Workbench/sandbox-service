@@ -56,6 +56,10 @@ class ContainerRepository:
         """全部记录（含业务已删除），供 Scheduler 扫描与补偿使用。"""
         return list(self._session.scalars(select(Container)))
 
+    def list_all_ids(self) -> list[str]:
+        """全部容器 ID（含业务已删除），供远端孤儿容器比对使用。"""
+        return list(self._session.scalars(select(Container.container_id)))
+
     def list_active(
         self,
         *,

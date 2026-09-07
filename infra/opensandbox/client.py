@@ -19,6 +19,8 @@ from zoneinfo import ZoneInfo
 
 from httpx import Client as HttpxClient
 from opensandbox.config.connection_sync import ConnectionConfigSync
+from opensandbox.models.sandboxes import SandboxFilter
+from opensandbox.sync.manager import SandboxManagerSync
 from opensandbox.sync.sandbox import SandboxSync
 
 from config import Constants, settings
@@ -40,6 +42,7 @@ __all__ = [
 #: 默认资源限额（服务端创建沙箱必需 `resourceLimits` 字段）
 _DEFAULT_RESOURCE_LIMITS: dict[str, str] = {"cpu": "1", "memory": "1Gi"}
 _LOG_TAIL = 10000
+_SANDBOX_LIST_PAGE_SIZE = 100
 _TIMEZONE = ZoneInfo(Constants.TIMEZONE.value)
 _STOPPED_STATES = frozenset({"PAUSED", "EXITED", "STOPPED", "TERMINATED", "DEAD"})
 
@@ -111,6 +114,38 @@ class OpenSandboxClient:
         except Exception as exc:  # noqa: BLE001
             logger.error("OpenSandbox 创建容器失败: %s: %s", type(exc).__name__, exc)
             raise OpenSandboxError("创建容器失败") from exc
+
+    def list_container_ids(self, *, metadata: dict[str, str]) -> list[str]:
+        """按 metadata 查询全部沙箱 ID，自动遍历 OpenSandbox 分页结果。"""
+        try:
+            container_ids: list[str] = []
+            page = 1
+            with SandboxManagerSync.create(connection_config=self._config) as manager:
+                while True:
+                    result = manager.list_sandbox_infos(
+                        SandboxFilter(
+                            metadata=metadata,
+                            page=page,
+                            page_size=_SANDBOX_LIST_PAGE_SIZE,
+                        )
+                    )
+                    for info in result.sandbox_infos:
+                        info_metadata = info.metadata or {}
+                        if all(
+                            info_metadata.get(key) == value
+                            for key, value in metadata.items()
+                        ):
+                            container_ids.append(info.id)
+                    if not result.pagination.has_next_page:
+                        return container_ids
+                    page += 1
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "OpenSandbox 查询容器列表失败: %s: %s",
+                type(exc).__name__,
+                exc,
+            )
+            raise _classify(exc, "查询容器列表失败") from exc
 
     def get_status(self, container_id: str) -> SandboxStatus:
         """获取容器运行状态（v4 §8.2 Get Status）。"""
@@ -296,23 +331,8 @@ class OpenSandboxClient:
     def delete(self, container_id: str) -> None:
         """物理删除容器（v4 §11.4 Permanent Delete；已删除幂等成功）。"""
         try:
-            sandbox = SandboxSync.connect(
-                container_id,
-                connection_config=self._config,
-                skip_health_check=True,
-            )
-        except Exception as exc:  # noqa: BLE001
-            if _is_not_found(exc):
-                return
-            logger.error(
-                "OpenSandbox 删除容器失败: %s: %s: %s",
-                container_id,
-                type(exc).__name__,
-                exc,
-            )
-            raise OpenSandboxError("删除容器失败") from exc
-        try:
-            sandbox.destroy()
+            with SandboxManagerSync.create(connection_config=self._config) as manager:
+                manager.kill_sandbox(container_id)
         except Exception as exc:  # noqa: BLE001
             if _is_not_found(exc):
                 return

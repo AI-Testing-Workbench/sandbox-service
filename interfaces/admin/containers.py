@@ -1,5 +1,5 @@
 """
-管理端容器、容器日志与数量限制 API。
+管理端容器、孤儿容器、容器日志与数量限制 API。
 """
 
 from __future__ import annotations
@@ -17,6 +17,8 @@ from interfaces.admin.schemas import (
     ContainerLimitResponse,
     ExpirationRequest,
     ExpirationResponse,
+    OrphanContainerDeleteRequest,
+    OrphanContainerListResponse,
 )
 from interfaces.common_container_routes import register_container_action_routes
 from interfaces.common import api_responses
@@ -98,6 +100,30 @@ def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitRespons
             memory=request.memory,
         )
     )
+
+
+# 静态孤儿容器路径必须声明在动态 container_id 路径之前。
+@router.get(
+    "/orphans",
+    response_model=OrphanContainerListResponse,
+    responses=api_responses("成功", 200, 502),
+)
+def list_orphan_containers() -> OrphanContainerListResponse:
+    """查询未被记录在数据库中的孤儿容器。"""
+    return OrphanContainerListResponse(
+        container_ids=container_service.list_orphan_container_ids()
+    )
+
+
+@router.post(
+    "/orphans/delete",
+    status_code=204,
+    responses=api_responses("成功 (无内容)", 204, 400, 502),
+)
+def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
+    """批量删除指定的孤儿容器。"""
+    container_service.delete_orphan_containers(request.container_ids)
+    return Response(status_code=204)
 
 
 @router.get(

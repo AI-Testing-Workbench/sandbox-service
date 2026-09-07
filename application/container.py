@@ -2,7 +2,8 @@
 容器管理应用层（v4 §11、§14.5~§14.9）。
 
 - 后端业务逻辑集中于此：创建（含创建限制原子校验）、操作（Start/Stop/Restart）、
-  业务删除、恢复、立即删除、状态查询与剩余时间、日志查询、设置业务有效时长、业务条件查询。
+  业务删除、恢复、立即删除、状态查询与剩余时间、日志查询、设置业务有效时长、业务条件查询、
+  孤儿容器查询与清理。
 - REST 接口仅承担必要输入/输出，不重复业务判断。
 - 运行时状态来自 OpenSandbox（不落库）；业务数据写入 SQLite。
 - 创建限制在进程内互斥锁 + 事务中执行（v4 §11.2、§6.3 语义；SQLite 单写者 + 进程互斥，单实例部署）。
@@ -77,6 +78,8 @@ __all__ = [
     "permanent_delete",
     "set_expiration",
     "query_container_ids",
+    "list_orphan_container_ids",
+    "delete_orphan_containers",
     "list_admin_containers",
     "get_admin_container",
     "get_container_limit",
@@ -89,6 +92,8 @@ _TZ = ZoneInfo(Constants.TIMEZONE.value)
 _create_lock = threading.Lock()
 #: 恢复与 Scheduler 物理清理共用的生命周期临界区（单实例部署）
 _lifecycle_lock = threading.Lock()
+_SOURCE_METADATA_KEY = "testagent-cloud"
+_SOURCE_METADATA_VALUE = "true"
 
 
 @contextmanager
@@ -281,7 +286,10 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 image,
                 name=container_name,
                 env=env,
-                metadata={"name": container_name, "testagent-cloud": "true"},
+                metadata={
+                    "name": container_name,
+                    _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+                },
                 resource_limits=_resource_limits(params),
             )
         except Exception as exc:
@@ -657,6 +665,70 @@ def query_container_ids(
         return [r.container_id for r in rows]
 
 
+def list_orphan_container_ids() -> list[str]:
+    """查询带本服务来源标记、但数据库中没有记录的远端容器。"""
+    with _create_lock:
+        try:
+            remote_ids = get_opensandbox_client().list_container_ids(
+                metadata={
+                    _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+                }
+            )
+        except Exception as exc:
+            _raise_backend_service_error("查询孤儿容器", exc)
+
+        with session_scope() as session:
+            stored_ids = set(ContainerRepository(session).list_all_ids())
+
+    orphan_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for container_id in remote_ids:
+        if (
+            container_id
+            and container_id not in stored_ids
+            and container_id not in seen_ids
+        ):
+            orphan_ids.append(container_id)
+            seen_ids.add(container_id)
+    return orphan_ids
+
+
+def delete_orphan_containers(container_ids: list[str]) -> None:
+    """删除指定孤儿容器；单个失败不影响其他合法 ID 的处理。"""
+    requested_ids = _normalise_orphan_container_ids(container_ids)
+    orphan_ids = set(list_orphan_container_ids())
+    not_orphan_ids: list[str] = []
+    failed_ids: list[str] = []
+
+    for container_id in requested_ids:
+        if container_id not in orphan_ids:
+            not_orphan_ids.append(container_id)
+            continue
+        try:
+            get_opensandbox_client().delete(container_id)
+        except SandboxNotFoundError:
+            # 目标在列表和删除之间消失时，最终状态已经满足。
+            continue
+        except Exception as exc:  # noqa: BLE001
+            failed_ids.append(container_id)
+            logger.error(
+                "删除孤儿容器失败: %s: %s: %s",
+                container_id,
+                type(exc).__name__,
+                exc,
+            )
+
+    if not_orphan_ids:
+        details = ", ".join(not_orphan_ids)
+        if failed_ids:
+            details += f"；删除失败: {', '.join(failed_ids)}"
+        raise InvalidArgumentError(f"以下容器不是孤儿容器: {details}")
+    if failed_ids:
+        raise ExternalDependencyError(
+            f"以下孤儿容器删除失败: {', '.join(failed_ids)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 管理端容器完整查询与数量限制
 # ---------------------------------------------------------------------------
@@ -753,6 +825,23 @@ def _require_active_record(container_id: str) -> ContainerRow:
     if row is None or row.deleted_at is not None:
         raise ContainerNotFoundError("容器不存在")
     return row
+
+
+def _normalise_orphan_container_ids(container_ids: list[str]) -> list[str]:
+    """校验并去重孤儿容器 ID，保留请求顺序。"""
+    if not isinstance(container_ids, list) or not container_ids:
+        raise InvalidArgumentError("container_ids 不能为空")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for container_id in container_ids:
+        if not isinstance(container_id, str) or not container_id.strip():
+            raise InvalidArgumentError("container_id 不能为空")
+        normalized = container_id.strip()
+        if normalized not in seen:
+            result.append(normalized)
+            seen.add(normalized)
+    return result
 
 
 def _raise_backend_service_error(operation: str, exc: Exception) -> NoReturn:
