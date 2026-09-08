@@ -486,7 +486,7 @@ def _check_creation_limits(
 # 状态查询与剩余时间（T6.7）
 # ---------------------------------------------------------------------------
 def get_status(container_id: str) -> ContainerStatusView:
-    """实时查询 OpenSandbox 获取 status/endpoint/started_at 与预计过期时间。"""
+    """实时查询 OpenSandbox 获取状态信息；资源指标不可用时返回空值。"""
     row = _require_active_record(container_id)
     try:
         status: SandboxStatus = get_opensandbox_client().get_status(container_id)
@@ -625,29 +625,20 @@ def restore(container_id: str, expiration_hours: int) -> ContainerStatusView:
 
 
 def _get_metrics(container_id: str) -> tuple[Optional[float], Optional[float]]:
-    """读取容器资源使用率；旧测试替身未提供 metrics 时返回空值。"""
+    """读取容器资源使用率；指标不可用时返回空值且不影响状态查询。"""
     get_metrics = getattr(get_opensandbox_client(), "get_metrics", None)
     if not callable(get_metrics):
         return None, None
+    # noinspection broad-exception
     try:
         # noinspection calling-non-callable
         metrics = get_metrics(container_id)
     except SandboxNotFoundError as exc:
         delete_missing_container_record(container_id)
         raise ContainerNotFoundError("后端容器不存在") from exc
-    except OpenSandboxError as exc:
-        logger.error("获取容器资源使用率失败: %s: %s", container_id, exc)
-        return None, None
-    except Exception as exc:
-        logger.error(
-            "获取容器资源使用率失败: %s: %s: %s",
-            container_id,
-            type(exc).__name__,
-            exc,
-        )
+    except Exception:
         return None, None
     if not isinstance(metrics, SandboxMetrics):
-        logger.error("获取容器资源使用率失败: %s: 返回类型无效", container_id)
         return None, None
     return metrics.cpu_usage, metrics.memory_usage
 

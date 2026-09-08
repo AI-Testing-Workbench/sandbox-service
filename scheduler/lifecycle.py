@@ -192,8 +192,8 @@ def refresh_status_cache() -> None:
     """刷新全部活跃容器的运行状态到进程内缓存；清理已不存在容器的缓存项。
 
     状态映射（v4 §8.3）：运行 → `running`；已停止 → `stopped`；创建/重启期间 → `pending`；
-    不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录。单个容器刷新失败不会中断本轮，
-    最终日志会单独统计失败数量。
+    不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录；指标不可用时仅将指标置空。
+    单个容器刷新失败不会中断本轮，最终日志会单独统计状态/端点失败数量。
     """
     with session_scope() as session:
         rows = list(ContainerRepository(session).list_active())
@@ -335,25 +335,16 @@ def _fetch_runtime_status(
     if callable(get_metrics):
         # noinspection unnecessary-cast
         get_metrics_callable = cast(Callable[[str], object], get_metrics)
+        # noinspection broad-exception
         try:
             metrics = get_metrics_callable(container_id)
-            if not isinstance(metrics, SandboxMetrics):
-                raise TypeError("资源使用率返回类型无效")
-            cpu_usage = metrics.cpu_usage
-            memory_usage = metrics.memory_usage
+            if isinstance(metrics, SandboxMetrics):
+                cpu_usage = metrics.cpu_usage
+                memory_usage = metrics.memory_usage
         except SandboxNotFoundError:
             return None, True, False
-        except OpenSandboxError as exc:
-            logger.error("状态刷新获取资源使用率失败: %s: %s", container_id, exc)
-            failed = True
-        except Exception as exc:  # noqa: BLE001 资源指标失败不影响状态缓存
-            logger.error(
-                "状态刷新获取资源使用率失败: %s: %s: %s",
-                container_id,
-                type(exc).__name__,
-                exc,
-            )
-            failed = True
+        except Exception:  # noqa: BLE001 资源指标失败不影响状态缓存
+            pass
 
     return (
         CachedRuntimeStatus(

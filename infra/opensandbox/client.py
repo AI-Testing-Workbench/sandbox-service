@@ -4,8 +4,9 @@ OpenSandbox 集成层（v4 §8）。
 - 使用 OpenSandbox 官方 Python 包（同步封装 `SandboxSync`）作为客户端，封装于本模块；
   业务层与接口层不直接依赖原始包细节（v4 §8.1）。
 - 容器日志通过 OpenSandbox 管理面 diagnostics plain-text API 读取，固定请求最后 10000 行。
+- 容器资源指标属于可选附加信息，获取失败时返回空值，不影响容器状态查询。
 - 连接地址与可选 API Key 来自环境变量（v4 §5.1 `TA_SS_OPENSANDBOX_*`）；未设置 Key 不发送（v4 §8.4）。
-- 调用失败或不可达时 MUST 将底层详细错误写日志，对外只抛合理摘要（v4 §8.4）。
+- 除资源指标的可选降级外，调用失败或不可达时 MUST 将底层详细错误写日志，对外只抛合理摘要（v4 §8.4）。
 """
 
 from __future__ import annotations
@@ -32,6 +33,20 @@ from infra.opensandbox.types import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+class _SuppressSdkMetricsErrors(logging.Filter):
+    """资源指标为可选信息，不让 SDK 的失败堆栈污染服务错误日志。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return record.levelno < logging.ERROR
+
+
+# MetricsAdapterSync 在抛出异常前会自行记录 ERROR；只过滤该 SDK logger，
+# 保留 OpenSandbox 其他适配器的错误日志。
+logging.getLogger("opensandbox.sync.adapters.metrics_adapter").addFilter(
+    _SuppressSdkMetricsErrors()
+)
 
 __all__ = [
     "OpenSandboxClient",
@@ -174,18 +189,23 @@ class OpenSandboxClient:
             headers=dict(endpoint.headers or {})
         )
 
-    def get_metrics(self, container_id: str) -> SandboxMetrics:
-        """获取容器当前 CPU/内存使用率（百分比）。"""
+    def get_metrics(self, container_id: str) -> Optional[SandboxMetrics]:
+        """获取容器当前 CPU/内存使用率；指标不可用时返回空值。"""
         try:
             raw = self._get_metrics_raw(container_id)
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "OpenSandbox 获取容器资源使用率失败: %s: %s: %s",
+            if isinstance(exc, SandboxNotFoundError):
+                raise
+            classified = _classify(exc, "获取容器资源使用率失败")
+            if isinstance(classified, SandboxNotFoundError):
+                raise classified from exc
+            logger.debug(
+                "OpenSandbox 获取容器资源使用率失败（忽略）: %s: %s: %s",
                 container_id,
                 type(exc).__name__,
                 exc,
             )
-            raise _classify(exc, "获取容器资源使用率失败") from exc
+            return None
         try:
             cpu_usage = _metric_number(
                 getattr(raw, "cpu_used_percentage", getattr(raw, "cpu_used_pct", None)),
@@ -200,8 +220,13 @@ class OpenSandboxClient:
                 "内存使用量",
             )
         except (TypeError, ValueError) as exc:
-            logger.error("OpenSandbox 获取容器资源使用率失败: %s: %s: %s", container_id, type(exc).__name__, exc)
-            raise OpenSandboxError("获取容器资源使用率失败") from exc
+            logger.debug(
+                "OpenSandbox 获取容器资源使用率失败: %s: %s: %s",
+                container_id,
+                type(exc).__name__,
+                exc,
+            )
+            return None
         memory_usage = (memory_used / memory_total * 100) if memory_total > 0 else 0.0
         return SandboxMetrics(cpu_usage=cpu_usage, memory_usage=memory_usage)
 
