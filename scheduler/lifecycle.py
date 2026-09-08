@@ -191,8 +191,9 @@ def purge_containers() -> list[str]:
 def refresh_status_cache() -> None:
     """刷新全部活跃容器的运行状态到进程内缓存；清理已不存在容器的缓存项。
 
-    状态映射（v4 §8.3）：运行 → `running`；已停止 → `stopped`；创建/重启期间 → `pending`；
-    不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录；指标不可用时仅将指标置空。
+    状态映射（v4 §8.3）：Running → `running`；Paused/Terminated 及兼容退出态 →
+    `stopped`；Failed → `failed`；Pending/Pausing/Resuming/Stopping 等过渡态 →
+    `pending`；不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录；指标不可用时仅将指标置空。
     单个容器刷新失败不会中断本轮，最终日志会单独统计状态/端点失败数量。
     """
     with session_scope() as session:
@@ -201,27 +202,35 @@ def refresh_status_cache() -> None:
     updates: dict[str, CachedRuntimeStatus] = {}
     failed_count = 0
     for row in rows:
-        try:
-            runtime, missing, failed = _fetch_runtime_status(row.container_id)
-        except Exception as exc:  # noqa: BLE001
-            # 单个容器异常不得中断本轮刷新；保留 unknown 快照并统计失败数。
-            logger.error(
-                "单容器状态刷新失败: %s: %s: %s",
-                row.container_id,
-                type(exc).__name__,
-                exc,
-            )
-            runtime, missing, failed = (
-                CachedRuntimeStatus(
-                    status=ContainerStatus.UNKNOWN,
-                    endpoint=None,
-                    started_at=None,
-                    cpu_usage=None,
-                    memory_usage=None,
-                ),
-                False,
-                True,
-            )
+        # 首轮扫描后重新确认记录仍活跃，并与业务删除/恢复串行化；否则旧快照
+        # 可能在业务删除后继续访问远端，甚至把已删除记录重新写入状态缓存。
+        with _container.lifecycle_guard():
+            with session_scope() as session:
+                current = ContainerRepository(session).get(row.container_id)
+            if current is None or current.deleted_at is not None:
+                continue
+
+            try:
+                runtime, missing, failed = _fetch_runtime_status(row.container_id)
+            except Exception as exc:  # noqa: BLE001
+                # 单个容器异常不得中断本轮刷新；保留 unknown 快照并统计失败数。
+                logger.error(
+                    "单容器状态刷新失败: %s: %s: %s",
+                    row.container_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                runtime, missing, failed = (
+                    CachedRuntimeStatus(
+                        status=ContainerStatus.UNKNOWN,
+                        endpoint=None,
+                        started_at=None,
+                        cpu_usage=None,
+                        memory_usage=None,
+                    ),
+                    False,
+                    True,
+                )
         if missing:
             # noinspection broad-exception
             try:

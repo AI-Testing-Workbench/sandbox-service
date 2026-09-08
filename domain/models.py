@@ -1,7 +1,8 @@
 """
 领域层业务模型（v4 §8.3、§11.1）。
 
-- `ContainerStatus`：业务状态枚举 `pending` / `running` / `stopped` / `business_deleted` / `unknown`。
+- `ContainerStatus`：业务状态枚举 `pending` / `running` / `stopped` / `failed` /
+  `business_deleted` / `unknown`。
 - `Container`：容器业务模型（含 `authorize_general_account`，变更 #2）。
 - 时间均为带时区偏移的 ISO 8601 字符串（v4 §5.3，UTC+8）。
 - OpenSandbox 原始运行状态到业务状态的映射规则见 `map_runtime_state`。
@@ -28,6 +29,7 @@ class ContainerStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     STOPPED = "stopped"
+    FAILED = "failed"
     BUSINESS_DELETED = "business_deleted"
     UNKNOWN = "unknown"
 
@@ -68,13 +70,16 @@ def map_runtime_state(raw: Optional[str]) -> ContainerStatus:
     """将 OpenSandbox 原始运行状态映射为业务状态（v4 §8.3）：
 
     - 运行中 → `running`
-    - 已停止（暂停 / 退出 / 终止等）→ `stopped`
-    - 创建 / 启动 / 重启尚未稳定等其余状态 → `pending`
+    - 已停止（Paused / Terminated，以及旧后端的退出态）→ `stopped`
+    - 运行失败（Failed）→ `failed`
+    - 创建 / 暂停中 / 恢复中 / 终止中等过渡状态 → `pending`
     - 获取失败或不可达时应由调用方另行给出 `unknown`（不通过本函数）。
     """
     state = (raw or "").strip().upper()
     if state == "RUNNING":
         return ContainerStatus.RUNNING
+    if state == "FAILED":
+        return ContainerStatus.FAILED
     if state in ("PAUSED", "EXITED", "STOPPED", "TERMINATED", "DEAD"):
         return ContainerStatus.STOPPED
     return ContainerStatus.PENDING

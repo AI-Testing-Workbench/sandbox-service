@@ -37,7 +37,11 @@ from domain.errors import (
 )
 from domain.models import ContainerStatus, add_hours_to_iso, map_runtime_state
 from infra.db import session_scope
-from infra.opensandbox.client import OpenSandboxError, SandboxNotFoundError
+from infra.opensandbox.client import (
+    OpenSandboxError,
+    SandboxFailedError,
+    SandboxNotFoundError,
+)
 from infra.opensandbox.types import (
     CreatedSandbox,
     SandboxEndpoint,
@@ -546,6 +550,8 @@ def start(container_id: str) -> None:
     _require_active_record(container_id)
     try:
         get_opensandbox_client().start(container_id)
+    except SandboxFailedError as exc:
+        raise BusinessConflictError("失败状态的容器不能直接启动，请先删除后重新创建") from exc
     except Exception as exc:
         _raise_backend_service_error("启动容器", exc)
 
@@ -564,6 +570,8 @@ def restart(container_id: str) -> None:
     _require_active_record(container_id)
     try:
         get_opensandbox_client().restart(container_id)
+    except SandboxFailedError as exc:
+        raise BusinessConflictError("失败状态的容器不能直接重启，请先删除后重新创建") from exc
     except Exception as exc:
         _raise_backend_service_error("重启容器", exc)
 
