@@ -46,3 +46,7 @@ services:
 
 如果没有修改默认的映射端口，则访问 `http://localhost:8080/docs` 查看 API 文档，
 鉴权密码在 `compose.yaml` 中设置。
+
+## 本地添加管理员账户
+
+在容器内部运行 `python admin.py add <用户 ID>`。
