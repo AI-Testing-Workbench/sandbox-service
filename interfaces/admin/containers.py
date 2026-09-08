@@ -4,11 +4,12 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 from fastapi.responses import PlainTextResponse
 
 from application import container as container_service
 from application import image as image_service
+from interfaces.admin.auth import require_admin_access
 from interfaces.admin.schemas import (
     AdminContainerListResponse,
     AdminContainerResponse,
@@ -21,14 +22,19 @@ from interfaces.admin.schemas import (
     OrphanContainerListResponse,
 )
 from interfaces.common_container_routes import register_container_action_routes
-from interfaces.common import api_responses
+from interfaces.common import ErrorResponse, api_responses
 
 __all__ = [
     "router",
 ]
 
 
-router = APIRouter(prefix="/admin/containers", tags=["管理员 API (容器操作)"])
+router = APIRouter(
+    prefix="/admin/containers",
+    tags=["管理员 API (容器操作)"],
+    dependencies=[Depends(require_admin_access)],
+    responses={401: {"model": ErrorResponse, "description": "未认证"}},
+)
 
 
 # 管理端容器接口顺序：增加、批量获取、单项获取、日志、Start、Stop、Restart、删除、永久删除、Expiration、恢复

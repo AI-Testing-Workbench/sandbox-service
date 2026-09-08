@@ -4,18 +4,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from application import container as container_service
+from interfaces.admin.auth import require_admin_access
 from interfaces.admin.schemas import AdminStateResponse
-from interfaces.common import api_responses
+from interfaces.common import ErrorResponse, api_responses
 
 __all__ = [
     "router",
 ]
 
 
-router = APIRouter(prefix="/admin", tags=["管理员 API (容器操作)"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["管理员 API (容器操作)"],
+    dependencies=[Depends(require_admin_access)],
+    responses={401: {"model": ErrorResponse, "description": "未认证"}},
+)
 
 
 @router.get(

@@ -10,11 +10,12 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO, Optional, cast
 
-from fastapi import APIRouter, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 
 from application import image as image_service
 from config import Constants, settings
 from domain.errors import ExternalDependencyError
+from interfaces.admin.auth import require_admin_access
 from interfaces.admin.schemas import (
     DefaultImageResponse,
     ImageDeleteRequest,
@@ -22,14 +23,19 @@ from interfaces.admin.schemas import (
     ImageListResponse,
     ImageReferenceRequest,
 )
-from interfaces.common import api_responses
+from interfaces.common import ErrorResponse, api_responses
 
 __all__ = [
     "router",
 ]
 
 
-router = APIRouter(prefix="/admin/images", tags=["管理员 API (镜像操作)"])
+router = APIRouter(
+    prefix="/admin/images",
+    tags=["管理员 API (镜像操作)"],
+    dependencies=[Depends(require_admin_access)],
+    responses={401: {"model": ErrorResponse, "description": "未认证"}},
+)
 
 
 # 镜像接口顺序：上传、推送、获取清单、删除、设置默认、删除默认、获取默认

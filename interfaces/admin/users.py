@@ -4,19 +4,25 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Response
+from fastapi import APIRouter, Depends, Response
 
 from application import admin_users, whitelist
 from domain.errors import BusinessConflictError
 from interfaces.admin.schemas import UserIdRequest, UserIdsResponse, UserMutationResponse
-from interfaces.common import api_responses
+from interfaces.admin.auth import require_admin_access
+from interfaces.common import ErrorResponse, api_responses
 
 __all__ = [
     "router",
 ]
 
 
-router = APIRouter(prefix="/admin", tags=["管理员 API (用户清单操作)"])
+router = APIRouter(
+    prefix="/admin",
+    tags=["管理员 API (用户清单操作)"],
+    dependencies=[Depends(require_admin_access)],
+    responses={401: {"model": ErrorResponse, "description": "未认证"}},
+)
 
 
 # 白名单接口顺序：增加、获取、删除

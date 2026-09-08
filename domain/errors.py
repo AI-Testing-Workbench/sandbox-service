@@ -11,6 +11,7 @@ from typing import Optional
 __all__ = [
     "AppError",
     "InvalidArgumentError",
+    "UnauthorizedError",
     "DefaultImageNotConfiguredError",
     "ContainerNotFoundError",
     "UserNotFoundError",
@@ -48,6 +49,13 @@ class InvalidArgumentError(AppError):
 
     http_status = 400
     code = "invalid_argument"
+
+
+class UnauthorizedError(AppError):
+    """请求未通过身份校验（HTTP 401）。"""
+
+    http_status = 401
+    code = "unauthorized"
 
 
 class DefaultImageNotConfiguredError(InvalidArgumentError):

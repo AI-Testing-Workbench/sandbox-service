@@ -83,6 +83,7 @@ class ExpirationResponse(BaseModel):
 
 _ERROR_LABELS = {
     400: "非法参数 / 配置错误",
+    401: "未认证",
     404: "资源不存在",
     409: "业务冲突 / 重复新增",
     500: "服务内部错误",
