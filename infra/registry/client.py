@@ -2,7 +2,8 @@
 Registry HTTP API V2 集成层（v4 §7.4）。
 
 - 已推送判断：`HEAD {registry}/v2/{namespace}/{name}/manifests/{tag}`；
-  200 → 已推送（Manifest 存在），404 → 未推送。
+  跟随 Registry 的 HTTP 重定向后，200 → 已推送（Manifest 存在），404 → 未推送；
+  401 → 未授权，按未推送处理。
 - 不比对本地与 Registry 的 Digest，只判断 Manifest 是否存在。
 - Registry 无身份验证，直接发送无认证请求（v4 §7.4）。
 - 失败时 MUST 将底层详细错误写日志，对外只抛合理摘要（v4 §7.5）。
@@ -50,7 +51,10 @@ class RegistryClient:
         url = self._manifest_url(registry, namespace, name, tag)
         try:
             response = requests.head(
-                url, timeout=self._timeout, headers={"Accept": _MANIFEST_ACCEPT}
+                url,
+                timeout=self._timeout,
+                headers={"Accept": _MANIFEST_ACCEPT},
+                allow_redirects=True,
             )
         except requests.RequestException as exc:
             logger.exception("Registry manifest 检查请求失败: %s", url)
@@ -58,6 +62,11 @@ class RegistryClient:
         if response.status_code == 200:
             return True
         if response.status_code == 404:
+            return False
+        if response.status_code == 401:
+            # Registry authentication is not configured by the current API contract;
+            # an unauthorized status is therefore an unavailable status check.
+            logger.warning("Registry manifest 检查未授权 (HTTP 401)，按未推送处理: %s", url)
             return False
         raise RegistryError(f"Registry 返回非预期状态: HTTP {response.status_code}")
 
@@ -72,15 +81,24 @@ class RegistryClient:
         base = self._manifest_url(registry, namespace, name, tag)
         headers = {"Accept": _MANIFEST_ACCEPT}
         try:
-            head = requests.head(base, timeout=self._timeout, headers=headers)
+            head = requests.head(
+                base,
+                timeout=self._timeout,
+                headers=headers,
+                allow_redirects=True,
+            )
             if head.status_code == 404:
                 return True
+            head_url = getattr(head, "url", None)
+            if not isinstance(head_url, str) or not head_url:
+                head_url = base
             digest = head.headers.get("Docker-Content-Digest")
             if digest:
-                manifest_base = f"{_normalize_registry(registry)}/v2/{namespace}/{name}/manifests"
+                # Use the final URL so a HTTP→HTTPS redirect is preserved for DELETE.
+                manifest_base = head_url.rsplit("/", 1)[0]
                 target = f"{manifest_base}/{digest}"
             else:
-                target = base
+                target = head_url
             response = requests.delete(target, timeout=self._timeout)
             return response.status_code in (200, 202, 404)
         except requests.RequestException as exc:
