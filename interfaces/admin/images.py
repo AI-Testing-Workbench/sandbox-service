@@ -96,8 +96,19 @@ def push_image(request: ImageReferenceRequest) -> Response:
     responses=api_responses("成功", 200, 502),
 )
 def list_images() -> ImageListResponse:
-    """获取本地镜像清单。"""
+    """获取本地镜像清单（不自动探测推送状态，避免慢 Registry 拖慢列表）。"""
     rows = image_service.list_images()
+    return ImageListResponse(images=[_image_item(row) for row in rows])
+
+
+@router.post(
+    "/check",
+    response_model=ImageListResponse,
+    responses=api_responses("成功", 200, 502),
+)
+def check_image_push_states() -> ImageListResponse:
+    """手动全量刷新镜像推送状态（对 Registry 逐个探测，管理员显式触发）。"""
+    rows = image_service.check_image_push_states()
     return ImageListResponse(images=[_image_item(row) for row in rows])
 
 
