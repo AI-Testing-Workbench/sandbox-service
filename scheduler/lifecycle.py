@@ -34,6 +34,8 @@ __all__ = [
     "compensate",
     "run_loop",
     "CachedRuntimeStatus",
+    "mark_container_stop_requested",
+    "mark_container_start_requested",
     "get_cached_status",
     "get_cached_runtime",
     "all_cached_statuses",
@@ -59,6 +61,11 @@ class CachedRuntimeStatus:
 
 # 管理 API 需要的运行时附加字段也随状态刷新缓存，避免每次请求直连后端。
 _runtime_cache: dict[str, CachedRuntimeStatus] = {}
+# Each lifecycle action advances the version for its container.  A refresh may
+# then discard a result fetched before that action instead of overwriting the
+# newer transition state.
+_cache_versions: dict[str, int] = {}
+_transition_targets: dict[str, tuple[int, ContainerStatus]] = {}
 
 
 def _now() -> datetime:
@@ -193,15 +200,19 @@ def refresh_status_cache() -> None:
 
     状态映射（v4 §8.3）：Running → `running`；Paused/Terminated 及兼容退出态 →
     `stopped`；Failed → `failed`；Pending/Pausing/Resuming/Stopping 等过渡态 →
-    `pending`；不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录；指标不可用时仅将指标置空。
+    `pending`；不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录；非运行态不请求指标，
+    运行态指标不可用时仅将指标置空。
     单个容器刷新失败不会中断本轮，最终日志会单独统计状态/端点失败数量。
     """
     with session_scope() as session:
         rows = list(ContainerRepository(session).list_active())
     active_ids: set[str] = set()
     updates: dict[str, CachedRuntimeStatus] = {}
+    update_versions: dict[str, int] = {}
     failed_count = 0
     for row in rows:
+        with _status_cache_lock:
+            cache_version = _cache_versions.get(row.container_id, 0)
         # 首轮扫描后重新确认记录仍活跃，并与业务删除/恢复串行化；否则旧快照
         # 可能在业务删除后继续访问远端，甚至把已删除记录重新写入状态缓存。
         with _container.lifecycle_guard():
@@ -244,22 +255,42 @@ def refresh_status_cache() -> None:
         active_ids.add(row.container_id)
         if runtime is not None:
             updates[row.container_id] = runtime
+            update_versions[row.container_id] = cache_version
             failed_count += int(failed)
     with _status_cache_lock:
-        _status_cache.update({cid: runtime.status for cid, runtime in updates.items()})
-        _runtime_cache.update(updates)
+        published_updates: dict[str, CachedRuntimeStatus] = {}
+        for container_id, runtime in updates.items():
+            # A lifecycle action may have completed while this refresh was
+            # reading the remote state. Never publish that stale result over
+            # the pending transition created by the action.
+            if _cache_versions.get(container_id, 0) != update_versions[container_id]:
+                continue
+            transition = _transition_targets.get(container_id)
+            if transition is not None and transition[0] == update_versions[container_id]:
+                target = transition[1]
+                if target is ContainerStatus.STOPPED and runtime.status is ContainerStatus.RUNNING:
+                    continue
+                if target is ContainerStatus.RUNNING and runtime.status is ContainerStatus.STOPPED:
+                    continue
+                if runtime.status is target or runtime.status is ContainerStatus.FAILED:
+                    _transition_targets.pop(container_id, None)
+            _status_cache[container_id] = runtime.status
+            _runtime_cache[container_id] = runtime
+            published_updates[container_id] = runtime
         stale = [
             cid
             for cid in set(_status_cache) | set(_runtime_cache)
             if cid not in active_ids
         ]
         for cid in stale:
+            _cache_versions[cid] = _cache_versions.get(cid, 0) + 1
+            _transition_targets.pop(cid, None)
             _status_cache.pop(cid, None)
             _runtime_cache.pop(cid, None)
     if rows or stale:
         logger.info(
             "状态刷新: 更新 %d 个容器状态，更新失败 %d 个，清理 %d 个失效项",
-            len(updates),
+            len(published_updates),
             failed_count,
             len(stale),
         )
@@ -340,20 +371,23 @@ def _fetch_runtime_status(
 
     cpu_usage: Optional[float] = None
     memory_usage: Optional[float] = None
-    get_metrics = getattr(client, "get_metrics", None)
-    if callable(get_metrics):
-        # noinspection unnecessary-cast
-        get_metrics_callable = cast(Callable[[str], object], get_metrics)
-        # noinspection broad-exception
-        try:
-            metrics = get_metrics_callable(container_id)
-            if isinstance(metrics, SandboxMetrics):
-                cpu_usage = metrics.cpu_usage
-                memory_usage = metrics.memory_usage
-        except SandboxNotFoundError:
-            return None, True, False
-        except Exception:  # noqa: BLE001 资源指标失败不影响状态缓存
-            pass
+    # A paused or transitional sandbox cannot answer execd metrics.  Status is
+    # the authoritative lifecycle field, so only probe metrics for RUNNING.
+    if status is ContainerStatus.RUNNING:
+        get_metrics = getattr(client, "get_metrics", None)
+        if callable(get_metrics):
+            # noinspection unnecessary-cast
+            get_metrics_callable = cast(Callable[[str], object], get_metrics)
+            # noinspection broad-exception
+            try:
+                metrics = get_metrics_callable(container_id)
+                if isinstance(metrics, SandboxMetrics):
+                    cpu_usage = metrics.cpu_usage
+                    memory_usage = metrics.memory_usage
+            except SandboxNotFoundError:
+                return None, True, False
+            except Exception:  # noqa: BLE001 资源指标失败不影响状态缓存
+                pass
 
     return (
         CachedRuntimeStatus(
@@ -388,8 +422,33 @@ def all_cached_statuses() -> dict[str, ContainerStatus]:
 
 def _discard_cached_status(container_id: str) -> None:
     with _status_cache_lock:
+        _cache_versions[container_id] = _cache_versions.get(container_id, 0) + 1
+        _transition_targets.pop(container_id, None)
         _status_cache.pop(container_id, None)
         _runtime_cache.pop(container_id, None)
+
+
+def mark_container_stop_requested(container_id: str) -> None:
+    """Publish a safe transition state after a successful remote Stop request."""
+    _mark_container_transition_requested(container_id, ContainerStatus.STOPPED)
+
+
+def mark_container_start_requested(container_id: str) -> None:
+    """Publish a safe transition state after a successful remote Start request."""
+    _mark_container_transition_requested(container_id, ContainerStatus.RUNNING)
+
+
+def _mark_container_transition_requested(
+    container_id: str,
+    target: ContainerStatus,
+) -> None:
+    with _status_cache_lock:
+        version = _cache_versions.get(container_id, 0) + 1
+        _cache_versions[container_id] = version
+        _transition_targets[container_id] = (version, target)
+        pending = CachedRuntimeStatus(status=ContainerStatus.PENDING)
+        _status_cache[container_id] = ContainerStatus.PENDING
+        _runtime_cache[container_id] = pending
 
 
 # ---------------------------------------------------------------------------

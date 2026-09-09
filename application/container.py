@@ -512,7 +512,12 @@ def get_status(container_id: str) -> ContainerStatusView:
     except Exception as exc:  # noqa: BLE001
         _raise_backend_service_error("获取容器端点", exc)
 
-    cpu_usage, memory_usage = _get_metrics(container_id)
+    # A paused/transitioning sandbox cannot serve execd metrics.  Metrics are
+    # optional, so do not delay the lifecycle status response for that probe.
+    if business is ContainerStatus.RUNNING:
+        cpu_usage, memory_usage = _get_metrics(container_id)
+    else:
+        cpu_usage, memory_usage = None, None
 
     return ContainerStatusView(
         container_id=container_id,
@@ -554,6 +559,9 @@ def start(container_id: str) -> None:
         raise BusinessConflictError("失败状态的容器不能直接启动，请先删除后重新创建") from exc
     except Exception as exc:
         _raise_backend_service_error("启动容器", exc)
+    from scheduler.lifecycle import mark_container_start_requested
+
+    mark_container_start_requested(container_id)
 
 
 def stop(container_id: str) -> None:
@@ -563,6 +571,12 @@ def stop(container_id: str) -> None:
         get_opensandbox_client().stop(container_id)
     except Exception as exc:
         _raise_backend_service_error("停止容器", exc)
+    # OpenSandbox Pause is accepted before the runtime necessarily reports
+    # Paused.  Publish a transition state immediately instead of serving an
+    # older running snapshot from the admin API.
+    from scheduler.lifecycle import mark_container_stop_requested
+
+    mark_container_stop_requested(container_id)
 
 
 def restart(container_id: str) -> None:
@@ -574,6 +588,9 @@ def restart(container_id: str) -> None:
         raise BusinessConflictError("失败状态的容器不能直接重启，请先删除后重新创建") from exc
     except Exception as exc:
         _raise_backend_service_error("重启容器", exc)
+    from scheduler.lifecycle import mark_container_start_requested
+
+    mark_container_start_requested(container_id)
 
 
 # ---------------------------------------------------------------------------

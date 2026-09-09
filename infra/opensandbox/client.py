@@ -59,6 +59,7 @@ __all__ = [
 _DEFAULT_RESOURCE_LIMITS: dict[str, str] = {"cpu": "1", "memory": "1Gi"}
 _LOG_TAIL = 10000
 _SANDBOX_LIST_PAGE_SIZE = 100
+_METRICS_TIMEOUT_SECONDS = 2.0
 _TIMEZONE = ZoneInfo(Constants.TIMEZONE.value)
 _STOP_IDEMPOTENT_STATES = frozenset({
     "PAUSED",
@@ -94,6 +95,9 @@ class OpenSandboxClient:
             request_timeout=timedelta(seconds=timeout),
             disable_metrics=True,
         )
+        # Metrics are optional and can be unavailable when a sandbox is paused.
+        # Keep a failed metrics probe from blocking lifecycle status requests.
+        self._metrics_timeout = min(timeout, _METRICS_TIMEOUT_SECONDS)
 
     def create(
         self,
@@ -287,7 +291,13 @@ class OpenSandboxClient:
         from opensandbox.constants import DEFAULT_EXECD_PORT
         from opensandbox.sync.adapters.factory import AdapterFactorySync
 
-        factory = AdapterFactorySync(self._config)
+        metrics_config = self._config.model_copy(
+            update={
+                "request_timeout": timedelta(seconds=self._metrics_timeout),
+                "headers": dict(self._config.headers),
+            }
+        )
+        factory = AdapterFactorySync(metrics_config)
         sandbox_service = factory.create_sandbox_service()
         metrics_service: object | None = None
         try:
