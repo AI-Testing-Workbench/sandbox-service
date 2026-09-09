@@ -55,6 +55,7 @@ def create_container(request: AdminCreateContainerRequest) -> AdminContainerResp
         container_service.CreateContainerParams(
             user_id=request.user_id,
             image=full_name,
+            container_type=request.type,
             gitee_url=request.gitee_url,
             gitee_user=request.gitee_user,
             gitee_repository=request.gitee_repository,
@@ -194,6 +195,7 @@ def restore(container_id: str, request: ExpirationRequest) -> Response:
 def _container_response(view: container_service.AdminContainerView) -> AdminContainerResponse:
     return AdminContainerResponse(
         container_id=view.container_id,
+        type=view.container_type,
         image=view.image,
         user_id=view.user_id,
         gitee_url=view.gitee_url,
@@ -205,6 +207,7 @@ def _container_response(view: container_service.AdminContainerView) -> AdminCont
         authorize_general_account=view.authorize_general_account,
         status=view.status.value,
         endpoint=view.endpoint,
+        novnc_url=view.novnc_url,
         started_at=view.started_at,
         expires_at=view.expires_at,
         cpu_usage=view.cpu_usage,

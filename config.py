@@ -22,6 +22,8 @@ from pathlib import Path
 from typing import Iterator, Literal, Optional, cast
 from urllib.parse import urlsplit
 
+from domain.models import ContainerType
+
 __all__ = [
     "ConfigError",
     "Constants",
@@ -262,6 +264,19 @@ SETTINGS_KEY_CONTAINER_COUNT_LIMIT = "container_count_limit"
 SETTINGS_KEY_CONTAINER_CPU_LIMIT = "container_cpu_limit"
 SETTINGS_KEY_CONTAINER_MEMORY_LIMIT = "container_memory_limit"
 
+#: autotest_cloud 类型的默认镜像 key（testagent_cloud 沿用历史 key `default_image`）
+SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD = "default_image_autotest_cloud"
+
+_DEFAULT_IMAGE_SETTINGS_KEYS = {
+    ContainerType.TESTAGENT_CLOUD: SETTINGS_KEY_DEFAULT_IMAGE,
+    ContainerType.AUTOTEST_CLOUD: SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD,
+}
+
+
+def _default_image_settings_key(container_type: ContainerType) -> str:
+    """按容器类型返回默认镜像在 settings 表中的 key。"""
+    return _DEFAULT_IMAGE_SETTINGS_KEYS[container_type]
+
 
 @contextmanager
 def _settings_scope() -> Iterator:
@@ -272,20 +287,29 @@ def _settings_scope() -> Iterator:
         yield SettingsRepository(session)
 
 
-def get_default_image() -> Optional[str]:
-    """读取默认镜像完整引用；未设置返回 None。"""
+def get_default_image(
+    container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
+) -> Optional[str]:
+    """读取指定容器类型的默认镜像完整引用；未设置返回 None。
+
+    `container_type` 缺省为 `testagent_cloud`，历史 key 行为保持不变。
+    """
     with _settings_scope() as repo:
-        row = repo.get(SETTINGS_KEY_DEFAULT_IMAGE)
+        row = repo.get(_default_image_settings_key(container_type))
     return row.value if row is not None else None
 
 
-def set_default_image(value: Optional[str]) -> None:
-    """设置默认镜像完整引用；传 None 表示取消默认。"""
+def set_default_image(
+    value: Optional[str],
+    container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
+) -> None:
+    """设置指定容器类型的默认镜像完整引用；传 None 表示取消默认。"""
+    key = _default_image_settings_key(container_type)
     with _settings_scope() as repo:
         if value is None:
-            repo.delete(SETTINGS_KEY_DEFAULT_IMAGE)
+            repo.delete(key)
         else:
-            repo.set(SETTINGS_KEY_DEFAULT_IMAGE, value)
+            repo.set(key, value)
 
 
 def get_container_count_limit() -> int:

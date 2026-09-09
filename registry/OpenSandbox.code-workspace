@@ -1,0 +1,17 @@
+{
+	"folders": [
+		{
+			"path": "../../OpenSandbox"
+		},
+		{
+			"path": "../../tscode-server-docker"
+		},
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../testagent-cloud-remote-ssh"
+		}
+	],
+	"settings": {}
+}

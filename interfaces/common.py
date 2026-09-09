@@ -9,6 +9,7 @@ from typing import Any, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import settings
+from domain.models import ContainerType
 
 __all__ = [
     "ErrorResponse",
@@ -31,6 +32,10 @@ class ContainerCreateRequestBase(BaseModel):
     """容器创建参数"""
 
     user_id: str = Field(description="用户 ID")
+    type: ContainerType = Field(
+        default=ContainerType.TESTAGENT_CLOUD,
+        description="容器类型：testagent_cloud 开发环境 / autotest_cloud 自动化跑批（启用 Chrome/VNC）",
+    )
     gitee_user: Optional[str] = Field(default=None, description="码云用户名")
     gitee_repository: Optional[str] = Field(default=None, description="码云仓库")
     gitee_branch: Optional[str] = Field(default=None, description="仓库分支 (可选)")
@@ -45,6 +50,14 @@ class ContainerRuntimeResponse(BaseModel):
     """容器基本属性字段"""
 
     container_id: str = Field(description="容器 ID")
+    type: str = Field(
+        default=ContainerType.TESTAGENT_CLOUD.value,
+        description="容器类型：testagent_cloud / autotest_cloud",
+    )
+    novnc_url: Optional[str] = Field(
+        default=None,
+        description="autotest_cloud 容器的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",
+    )
     status: str = Field(description="容器状态")
     endpoint: Optional[str] = Field(default=None, description="容器 SSH 访问端点")
     started_at: Optional[str] = Field(default=None, description="容器启动时间")

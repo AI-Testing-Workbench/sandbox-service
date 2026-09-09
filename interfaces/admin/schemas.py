@@ -9,6 +9,7 @@ from typing import Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from config import settings
+from domain.models import ContainerType
 from interfaces.common import (
     ContainerCreateRequestBase,
     ContainerRuntimeResponse,
@@ -21,6 +22,7 @@ __all__ = [
     "ErrorResponse",
     "ImageReferenceRequest",
     "ImageDeleteRequest",
+    "SetDefaultImageRequest",
     "ImageListItem",
     "ImageListResponse",
     "DefaultImageResponse",
@@ -52,6 +54,15 @@ class ImageDeleteRequest(ImageReferenceRequest):
     also_registry: bool = Field(default=True, description="是否同步删除注册表中的镜像")
 
 
+class SetDefaultImageRequest(ImageReferenceRequest):
+    """设置默认镜像请求"""
+
+    type: ContainerType = Field(
+        default=ContainerType.TESTAGENT_CLOUD,
+        description="容器类型：testagent_cloud / autotest_cloud",
+    )
+
+
 class ImageListItem(BaseModel):
     """镜像基本属性字段"""
 
@@ -76,6 +87,10 @@ class DefaultImageResponse(BaseModel):
     """默认镜像响应"""
 
     full_name: Optional[str] = Field(default=None, description="当前的默认镜像，未设置时为空")
+    type: str = Field(
+        default=ContainerType.TESTAGENT_CLOUD.value,
+        description="容器类型：testagent_cloud / autotest_cloud",
+    )
 
 
 class UserIdRequest(BaseModel):

@@ -10,11 +10,12 @@ import tempfile
 from pathlib import Path
 from typing import BinaryIO, Optional, cast
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
 from application import image as image_service
 from config import Constants, settings
 from domain.errors import ExternalDependencyError
+from domain.models import ContainerType
 from interfaces.admin.auth import require_admin_access
 from interfaces.admin.schemas import (
     DefaultImageResponse,
@@ -22,6 +23,7 @@ from interfaces.admin.schemas import (
     ImageListItem,
     ImageListResponse,
     ImageReferenceRequest,
+    SetDefaultImageRequest,
 )
 from interfaces.common import ErrorResponse, api_responses
 
@@ -116,9 +118,9 @@ def delete_image(request: ImageDeleteRequest) -> Response:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 409, 502),
 )
-def set_default_image(request: ImageReferenceRequest) -> Response:
-    """设置默认镜像。"""
-    image_service.set_default_image(request.full_name)
+def set_default_image(request: SetDefaultImageRequest) -> Response:
+    """设置指定容器类型的默认镜像。"""
+    image_service.set_default_image(request.full_name, request.type)
     return Response(status_code=204)
 
 
@@ -127,9 +129,14 @@ def set_default_image(request: ImageReferenceRequest) -> Response:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204),
 )
-def unset_default_image() -> Response:
-    """取消设置默认镜像。"""
-    image_service.unset_default_image()
+def unset_default_image(
+    type: ContainerType = Query(
+        default=ContainerType.TESTAGENT_CLOUD,
+        description="容器类型：testagent_cloud / autotest_cloud",
+    ),
+) -> Response:
+    """取消设置指定容器类型的默认镜像。"""
+    image_service.unset_default_image(type)
     return Response(status_code=204)
 
 
@@ -138,9 +145,17 @@ def unset_default_image() -> Response:
     response_model=DefaultImageResponse,
     responses=api_responses("成功", 200),
 )
-def get_default_image() -> DefaultImageResponse:
-    """获取默认镜像。"""
-    return DefaultImageResponse(full_name=image_service.get_default_image())
+def get_default_image(
+    type: ContainerType = Query(
+        default=ContainerType.TESTAGENT_CLOUD,
+        description="容器类型：testagent_cloud / autotest_cloud",
+    ),
+) -> DefaultImageResponse:
+    """获取指定容器类型的默认镜像。"""
+    return DefaultImageResponse(
+        type=type.value,
+        full_name=image_service.get_default_image(type),
+    )
 
 
 def _save_upload(file: UploadFile) -> str:
