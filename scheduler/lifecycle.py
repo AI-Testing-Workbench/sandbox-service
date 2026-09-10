@@ -22,6 +22,7 @@ from application import container as _container
 from domain.models import (
     ContainerStatus,
     add_hours_to_iso,
+    get_public_git_fin_status,
     map_runtime_state,
     resolve_container_status,
 )
@@ -62,6 +63,7 @@ class CachedRuntimeStatus:
     started_at: Optional[str] = None
     cpu_usage: Optional[float] = None
     memory_usage: Optional[float] = None
+    git_fin_status: str = "pending"
 
 
 # 管理 API 需要的运行时附加字段也随状态刷新缓存，避免每次请求直连后端。
@@ -266,6 +268,7 @@ def refresh_status_cache() -> None:
                     current_git_fin_status,
                     runtime.status,
                 ),
+                git_fin_status=get_public_git_fin_status(current_git_fin_status),
             )
             updates[row.container_id] = runtime
             update_versions[row.container_id] = cache_version

@@ -34,6 +34,7 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
         container_id=view.container_id,
         type=view.container_type,
         status=view.status.value,
+        git_fin_status=view.git_fin_status,
         endpoint=view.endpoint,
         novnc_url=view.novnc_url,
         started_at=view.started_at,

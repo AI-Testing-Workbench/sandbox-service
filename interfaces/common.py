@@ -59,6 +59,10 @@ class ContainerRuntimeResponse(BaseModel):
         description="autotest_cloud 容器的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",
     )
     status: str = Field(description="容器状态")
+    git_fin_status: str = Field(
+        default="pending",
+        description="Git 初始化最终状态",
+    )
     endpoint: Optional[str] = Field(default=None, description="容器 SSH 访问端点")
     started_at: Optional[str] = Field(default=None, description="容器启动时间")
     expires_at: Optional[str] = Field(default=None, description="容器预计删除时间")

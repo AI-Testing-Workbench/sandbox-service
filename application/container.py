@@ -41,6 +41,7 @@ from domain.models import (
     ContainerStatus,
     ContainerType,
     add_hours_to_iso,
+    get_public_git_fin_status,
     resolve_container_status,
 )
 from infra.db import session_scope
@@ -234,6 +235,7 @@ class ContainerStatusView:
     gitee_repository: str = ""
     gitee_url: str = ""
     novnc_url: Optional[str] = None
+    git_fin_status: str = "pending"
 
 
 @dataclass(frozen=True)
@@ -266,6 +268,7 @@ class AdminContainerView:
     business_deleted: bool
     container_type: str = ContainerType.TESTAGENT_CLOUD.value
     novnc_url: Optional[str] = None
+    git_fin_status: str = "pending"
 
 
 @dataclass(frozen=True)
@@ -643,6 +646,7 @@ def get_status(container_id: str) -> ContainerStatusView:
     return ContainerStatusView(
         container_id=container_id,
         status=business,
+        git_fin_status=get_public_git_fin_status(row.git_fin_status),
         container_type=row.container_type,
         endpoint=endpoint,
         novnc_url=_autotest_novnc_url(container_id, row.container_type),
@@ -1160,6 +1164,7 @@ def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         expiration_hours=row.expiration_hours,
         authorize_general_account=bool(row.authorize_general_account),
         status=status,
+        git_fin_status=get_public_git_fin_status(row.git_fin_status),
         endpoint=endpoint,
         novnc_url=_autotest_novnc_url(row.container_id, row.container_type),
         started_at=started_at,
@@ -1181,6 +1186,7 @@ def _get_admin_runtime(container_id: str) -> ContainerStatusView:
         return ContainerStatusView(
             container_id=container_id,
             status=cached.status,
+            git_fin_status=cached.git_fin_status,
             endpoint=cached.endpoint,
             started_at=cached.started_at,
             cpu_usage=cached.cpu_usage,

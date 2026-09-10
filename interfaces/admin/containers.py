@@ -45,7 +45,7 @@ router = APIRouter(
     status_code=200,
     responses=api_responses("成功", 200, 400, 409, 502),
 )
-def create_container(request: AdminCreateContainerRequest) -> AdminContainerResponse:
+def create_container(request: AdminCreateContainerRequest) -> AdminCreateContainerResponse:
     """创建并启动容器，包含供管理员使用的完整字段。"""
     full_name = (
         image_service.normalize_full_name(request.image)
@@ -68,7 +68,10 @@ def create_container(request: AdminCreateContainerRequest) -> AdminContainerResp
         )
     )
     view = _container_response(container_service.get_admin_container(created.container_id))
-    return AdminCreateContainerResponse(**view.model_dump(), service_id=created.service_id)
+    return AdminCreateContainerResponse(
+        **view.model_dump(exclude={"git_fin_status"}),
+        service_id=created.service_id,
+    )
 
 
 @router.get(
@@ -208,6 +211,7 @@ def _container_response(view: container_service.AdminContainerView) -> AdminCont
         expiration_hours=view.expiration_hours,
         authorize_general_account=view.authorize_general_account,
         status=view.status.value,
+        git_fin_status=view.git_fin_status,
         endpoint=view.endpoint,
         novnc_url=view.novnc_url,
         started_at=view.started_at,

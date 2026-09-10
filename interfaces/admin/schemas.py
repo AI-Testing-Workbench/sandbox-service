@@ -165,9 +165,35 @@ class AdminContainerResponse(ContainerRuntimeResponse):
     business_deleted: bool = Field(description="是否已业务删除")
 
 
-class AdminCreateContainerResponse(AdminContainerResponse):
-    """管理员创建响应；仅创建响应额外返回 Git 初始化 service_id。"""
+class AdminCreateContainerResponse(BaseModel):
+    """管理员创建响应"""
 
+    container_id: str = Field(description="容器 ID")
+    type: str = Field(
+        default=ContainerType.TESTAGENT_CLOUD.value,
+        description="容器类型: testagent_cloud / autotest_cloud",
+    )
+    novnc_url: Optional[str] = Field(
+        default=None,
+        description="autotest_cloud 容器的 noVNC 访问地址；其他类型为空",
+    )
+    status: str = Field(description="容器状态")
+    endpoint: Optional[str] = Field(default=None, description="容器 SSH 访问端点")
+    started_at: Optional[str] = Field(default=None, description="容器启动时间")
+    expires_at: Optional[str] = Field(default=None, description="容器预计删除时间")
+    cpu_usage: Optional[float] = Field(default=None, description="容器 CPU 使用率")
+    memory_usage: Optional[float] = Field(default=None, description="容器内存使用率")
+    image: str = Field(description="完整镜像名称")
+    user_id: str = Field(description="用户 ID")
+    gitee_user: str = Field(description="码云用户名")
+    gitee_repository: str = Field(description="码云仓库")
+    gitee_branch: Optional[str] = Field(default=None, description="码云分支，未设置时为空")
+    gitee_url: str = Field(description="码云仓库地址")
+    created_at: str = Field(description="容器创建时间")
+    expiration_hours: int = Field(description="容器运行时长，单位小时")
+    authorize_general_account: bool = Field(description="是否授权通用码云账户登录")
+    deleted_at: Optional[str] = Field(default=None, description="业务删除时间，未业务删除时为空")
+    business_deleted: bool = Field(description="是否已业务删除")
     service_id: str = Field(description="容器初始化时的服务 ID")
 
 
