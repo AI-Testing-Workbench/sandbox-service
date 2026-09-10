@@ -10,6 +10,7 @@
 - 各仓库特有方法见类内说明。
 - 创建限制（模式/数量）由应用层在**同一事务内**原子校验（变更 #3）；本层不设唯一约束兜底。
 - 不携带运行时状态（OpenSandbox 读到状态不落库，见 v4 §6.1 原则）。
+- Git 凭证 Repository 只保存密文；加密、解密和业务字段校验由 application 层负责。
 """
 
 from __future__ import annotations
@@ -19,13 +20,20 @@ from typing import Optional
 from sqlalchemy import ColumnElement, func, select
 from sqlalchemy.orm import Session
 
-from infra.orm import AdminUserRow, Container, SettingsRow, WhitelistUserRow
+from infra.orm import (
+    AdminUserRow,
+    Container,
+    GitCredentialRow,
+    SettingsRow,
+    WhitelistUserRow,
+)
 
 __all__ = [
     "ContainerRepository",
     "SettingsRepository",
     "WhitelistUserRepository",
     "AdminUserRepository",
+    "GitCredentialRepository",
 ]
 
 
@@ -225,3 +233,57 @@ class AdminUserRepository:
 
     def list_all(self) -> list[AdminUserRow]:
         return list(self._session.scalars(select(AdminUserRow)))
+
+
+class GitCredentialRepository:
+    """`git_credentials` 用户级凭证数据访问。
+
+    Repository 只保存和返回数据库中的密文；密码加密、解密和业务字段校验由应用层负责。
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def add(self, credential: GitCredentialRow) -> bool:
+        """新增用户凭证；同一事务中已有相同用户时返回 False。"""
+        if self.exists(credential.user_id):
+            return False
+        self._session.add(credential)
+        return True
+
+    def get(self, user_id: str) -> Optional[GitCredentialRow]:
+        return self._session.get(GitCredentialRow, user_id)
+
+    def exists(self, user_id: str) -> bool:
+        return self._pending_get(user_id) is not None or self.get(user_id) is not None
+
+    def upsert(self, credential: GitCredentialRow) -> GitCredentialRow:
+        """按 `user_id` 插入或覆盖当前用户凭证，暂不提交事务。"""
+        row = self._pending_get(credential.user_id)
+        if row is None:
+            row = self.get(credential.user_id)
+        if row is None:
+            self._session.add(credential)
+            return credential
+
+        if row is not credential:
+            row.type = credential.type
+            row.git_username = credential.git_username
+            row.git_email = credential.git_email
+            row.git_password = credential.git_password
+        return row
+
+    def delete(self, user_id: str) -> None:
+        """删除用户凭证；不存在时无操作。"""
+        row = self.get(user_id)
+        if row is not None:
+            self._session.delete(row)
+
+    def list_all(self) -> list[GitCredentialRow]:
+        return list(self._session.scalars(select(GitCredentialRow)))
+
+    def _pending_get(self, user_id: str) -> Optional[GitCredentialRow]:
+        for row in self._session.new:
+            if isinstance(row, GitCredentialRow) and row.user_id == user_id:
+                return row
+        return None
