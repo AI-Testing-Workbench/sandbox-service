@@ -17,7 +17,21 @@ from domain.errors import (
     UnauthorizedError,
     UserNotFoundError,
 )
-from domain.models import Container, ContainerStatus, map_runtime_state
+from domain.models import (
+    GIT_FAILURE_STATUSES,
+    GIT_FINAL_STATUSES,
+    GIT_INTERMEDIATE_STATUSES,
+    Container,
+    ContainerStatus,
+    GitFinalStatus,
+    GitStatus,
+    coerce_git_final_status,
+    coerce_git_status,
+    get_public_git_fin_status,
+    is_git_final_status,
+    map_runtime_state,
+    resolve_container_status,
+)
 
 __all__ = [
     "AppError",
@@ -31,5 +45,15 @@ __all__ = [
     "ExternalDependencyError",
     "Container",
     "ContainerStatus",
+    "GitStatus",
+    "GitFinalStatus",
+    "GIT_INTERMEDIATE_STATUSES",
+    "GIT_FAILURE_STATUSES",
+    "GIT_FINAL_STATUSES",
+    "coerce_git_status",
+    "coerce_git_final_status",
+    "is_git_final_status",
+    "get_public_git_fin_status",
+    "resolve_container_status",
     "map_runtime_state",
 ]
