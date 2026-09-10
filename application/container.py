@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from typing import TYPE_CHECKING, Iterator, NoReturn, Optional
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from config import Constants, settings
@@ -35,7 +36,12 @@ from domain.errors import (
     InvalidArgumentError,
     LimitReachedError,
 )
-from domain.models import ContainerStatus, add_hours_to_iso, map_runtime_state
+from domain.models import (
+    ContainerStatus,
+    ContainerType,
+    add_hours_to_iso,
+    map_runtime_state,
+)
 from infra.db import session_scope
 from infra.opensandbox.client import (
     OpenSandboxError,
@@ -98,6 +104,57 @@ _create_lock = threading.Lock()
 _lifecycle_lock = threading.Lock()
 _SOURCE_METADATA_KEY = "testagent-cloud"
 _SOURCE_METADATA_VALUE = "true"
+_CONTAINER_TYPE_METADATA_KEY = "container-type"
+#: 镜像内 noVNC/websockify 监听端口（tscode-server 镜像内固定 6080）
+_NOVNC_PORT = 6080
+
+
+def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
+    """由容器内 noVNC(6080) 的 endpoint 构造简洁的浏览器访问地址。
+
+    `endpoint` 是 OpenSandbox 对容器内 6080 端口的解析结果：
+    - K8s 直连：`<pod-ip>:6080` → 生成 `http://<pod-ip>:6080/vnc.html`
+    - docker 直连：`host:port/proxy/6080` → 生成 `http://host:port/proxy/6080/vnc.html`
+    - K8s 网关路由：`host/sandboxes/<id>/6080`（或带签名路径）→ 原路径下追加 `/vnc.html`
+
+    host/port 直接从 6080 endpoint 解析（不再经 SSH/22 或 /proxy 转发推导），
+    不带任何查询参数。仅 autotest_cloud 场景使用。
+    """
+    if not endpoint:
+        return None
+    candidate = endpoint.strip()
+    if not candidate:
+        return None
+    scheme = "http"
+    lowered = candidate.lower()
+    if lowered.startswith("https://"):
+        scheme = "https"
+        candidate = candidate[len("https://"):]
+    elif lowered.startswith("http://"):
+        candidate = candidate[len("http://"):]
+    parsed = urlsplit(f"{scheme}://{candidate}")
+    if not parsed.hostname:
+        return None
+    port = parsed.port or (443 if scheme == "https" else 80)
+    page_path = parsed.path.rstrip("/") + "/vnc.html"
+    return urlunsplit((scheme, f"{parsed.hostname}:{port}", page_path, "", ""))
+
+
+def _autotest_novnc_url(container_id: str, container_type_value: str) -> Optional[str]:
+    """autotest_cloud 容器取其自身 6080 endpoint 生成 noVNC 地址；其余返回 None。
+
+    读取 6080 失败时返回 None（不影响 SSH/状态查询）。
+    """
+    if container_type_value != ContainerType.AUTOTEST_CLOUD.value:
+        return None
+    try:
+        ep = get_opensandbox_client().get_endpoint(container_id, _NOVNC_PORT)
+    except Exception:
+        return None
+    endpoint = getattr(ep, "endpoint", None)
+    if not endpoint:
+        return None
+    return _build_novnc_url(endpoint)
 
 
 @contextmanager
@@ -133,12 +190,15 @@ class CreateContainerParams:
     cpu: Optional[float] = None
     #: 内存大小，单位固定 Gi，例如 1 / 2
     memory: Optional[int] = None
+    #: 容器类型：testagent_cloud（默认，仅 SSH）或 autotest_cloud（启用 Chrome/VNC）
+    container_type: ContainerType = ContainerType.TESTAGENT_CLOUD
 
 
 @dataclass(frozen=True)
 class CreatedContainer:
     container_id: str
     image: str
+    container_type: ContainerType
     expiration_hours: int
     authorize_general_account: bool
     created_at: str
@@ -149,6 +209,7 @@ class CreatedContainer:
 class ContainerStatusView:
     container_id: str
     status: ContainerStatus
+    container_type: str = ContainerType.TESTAGENT_CLOUD.value
     endpoint: Optional[str] = None
     started_at: Optional[str] = None
     expires_at: Optional[str] = None
@@ -157,6 +218,7 @@ class ContainerStatusView:
     gitee_user: str = ""
     gitee_repository: str = ""
     gitee_url: str = ""
+    novnc_url: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +249,8 @@ class AdminContainerView:
     memory_usage: Optional[float]
     deleted_at: Optional[str]
     business_deleted: bool
+    container_type: str = ContainerType.TESTAGENT_CLOUD.value
+    novnc_url: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -241,7 +305,7 @@ def _now_iso() -> str:
 def create_container(params: CreateContainerParams) -> CreatedContainer:
     """创建并自动启动容器（v4 §11.1）。
 
-    - 镜像：`params.image` 为空则使用默认镜像；默认镜像未配置抛 400 语义错误。
+    - 镜像：`params.image` 为空则使用**该容器类型**的默认镜像；默认镜像未配置抛 400 语义错误。
     - 创建限制（模式 / 数量）在此校验，白名单用户跳过全部；并发通过进程互斥 + SQLite 单写者保证。
     - 容器名：随机字符串（仅表示容器本身，不承载业务信息）；端口固定 22；
      环境变量注入 `TESTAGENT_CLOUD_USER_ID` / `TESTAGENT_CLOUD_GITEE_URL` /
@@ -249,7 +313,11 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
        `TESTAGENT_CLOUD_GITEE_BRANCH`（为空也注入空值）
        及 `TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT`（true/false），并注入
        `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY` 代理源；CPU / 内存可选覆盖默认资源限制。
-       OpenSandbox metadata 额外注入 `testagent-cloud=true` 用于来源识别。
+       OpenSandbox metadata 额外注入 `testagent-cloud=true`（来源识别）与
+       `container-type=<type>`（类型识别）。
+    - 类型：`testagent_cloud`（默认）只起 SSH；`autotest_cloud` 额外注入
+       `TESTAGENT_ENABLE_CHROME=1`（镜像内拉起 Chrome/VNC，sshd 仍可 SSH 连入），
+       两者底层为同一镜像、仅启动方式不同。
      """
     _validate_required(params)
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
@@ -269,6 +337,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 params.user_id,
                 gitee_user,
                 gitee_repository,
+                params.container_type,
             )
 
         env = {
@@ -284,6 +353,10 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             "TESTAGENT_CLOUD_PIP_URL": settings.container_pip_index_url,
             "TESTAGENT_CLOUD_NPM_URL": settings.container_npm_registry,
         }
+        if params.container_type == ContainerType.AUTOTEST_CLOUD:
+            # 自动化跑批容器启用 Chrome/VNC（镜像内 start.sh 据此拉起，sshd 照常运行）
+            env["TESTAGENT_ENABLE_CHROME"] = "1"
+
         container_name = uuid.uuid4().hex[:12]
         try:
             created: CreatedSandbox = get_opensandbox_client().create(
@@ -293,6 +366,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 metadata={
                     "name": container_name,
                     _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+                    _CONTAINER_TYPE_METADATA_KEY: params.container_type.value,
                 },
                 resource_limits=_resource_limits(params),
             )
@@ -318,6 +392,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                     ContainerRow(
                         container_id=container_id,
                         user_id=params.user_id,
+                        container_type=params.container_type.value,
                         gitee_url=gitee_url,
                         gitee_user=gitee_user,
                         gitee_repository=gitee_repository,
@@ -341,6 +416,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
         return CreatedContainer(
             container_id=container_id,
             image=image,
+            container_type=params.container_type,
             expiration_hours=expiration_hours,
             authorize_general_account=params.authorize_general_account is True,
             created_at=created_at,
@@ -396,7 +472,7 @@ def _cleanup_failed_remote_create(container_name: str) -> None:
 def _resolve_image(params: CreateContainerParams) -> str:
     if params.image:
         return params.image
-    image = _cfg_default_image()
+    image = _cfg_default_image(params.container_type)
     if not image:
         raise DefaultImageNotConfiguredError("没有提供默认镜像，请联系管理员解决")
     return image
@@ -454,6 +530,7 @@ def _check_creation_limits(
     user_id: str,
     gitee_user: str,
     gitee_repository: str,
+    container_type: ContainerType,
 ) -> None:
     """创建限制（v4 §11.2）：白名单跳过；模式限制 + 数量限制。
 
@@ -461,6 +538,8 @@ def _check_creation_limits(
     当前以「非业务删除记录」计数（业务过期会先置 deleted_at 再停容器），
     手动停止的容器仍视作占用预留槽位。repository 模式按
     `user_id + (gitee_user, gitee_repository)` 区分仓库。
+    数量/模式限制均按容器类型分别计数：同一用户可同时持有
+    testagent_cloud 与 autotest_cloud 各一个容器。
     """
     from application.whitelist import is_whitelisted
 
@@ -469,15 +548,16 @@ def _check_creation_limits(
 
     mode = settings.container_create_limit_mode
     if mode == "user":
-        if repo.count_active(user_id=user_id) >= 1:
-            raise LimitReachedError("当前不允许同一用户创建多个容器")
+        if repo.count_active(user_id=user_id, container_type=container_type.value) >= 1:
+            raise LimitReachedError("当前不允许同一用户创建多个同类型容器")
     elif mode == "repository":
         if repo.count_active(
             user_id=user_id,
             gitee_repository=gitee_repository,
             gitee_user=gitee_user,
+            container_type=container_type.value,
         ) >= 1:
-            raise LimitReachedError("当前不允许同一用户为单个仓库创建多个容器")
+            raise LimitReachedError("当前不允许同一用户为单个仓库创建多个同类型容器")
     else:
         raise BusinessConflictError(f"不支持的创建限制模式: {mode}")
 
@@ -522,7 +602,9 @@ def get_status(container_id: str) -> ContainerStatusView:
     return ContainerStatusView(
         container_id=container_id,
         status=business,
+        container_type=row.container_type,
         endpoint=endpoint,
+        novnc_url=_autotest_novnc_url(container_id, row.container_type),
         started_at=status.transitioned_at,
         expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
         cpu_usage=cpu_usage,
@@ -712,6 +794,7 @@ def query_container_ids(
     gitee_user: Optional[str] = None,
     gitee_repository: Optional[str] = None,
     gitee_branch: Optional[str] = None,
+    container_type: Optional[ContainerType] = None,
 ) -> list[str]:
     """按业务条件查询容器 ID（AND 组合，不含业务已删除，v4 §14.6）。
 
@@ -725,8 +808,36 @@ def query_container_ids(
             gitee_user=gitee_user,
             gitee_repository=gitee_repository,
             gitee_branch=gitee_branch,
+            container_type=container_type.value if container_type is not None else None,
         )
         return [r.container_id for r in rows]
+
+
+def query_container_statuses(
+    user_id: str,
+    *,
+    gitee_user: Optional[str] = None,
+    gitee_repository: Optional[str] = None,
+    gitee_branch: Optional[str] = None,
+    container_type: Optional[ContainerType] = None,
+) -> list[ContainerStatusView]:
+    """按业务条件一次性批量查询容器状态视图（不含业务已删除）。
+
+    `user_id` 必填：REST 端点无认证，禁止不带用户标识枚举全部容器。
+    供客户端避免「先查 ID 列表、再逐个查状态」的多次往返。
+    """
+    if not user_id or not user_id.strip():
+        raise InvalidArgumentError("user_id 不能为空")
+    with session_scope() as session:
+        rows = ContainerRepository(session).list_active(
+            user_id=user_id,
+            gitee_user=gitee_user,
+            gitee_repository=gitee_repository,
+            gitee_branch=gitee_branch,
+            container_type=container_type.value if container_type is not None else None,
+        )
+        container_ids = [r.container_id for r in rows]
+    return [get_status(container_id) for container_id in container_ids]
 
 
 def list_orphan_container_ids() -> list[str]:
@@ -998,6 +1109,7 @@ def _to_admin_view(row: ContainerRow) -> AdminContainerView:
     return AdminContainerView(
         container_id=row.container_id,
         image=row.image,
+        container_type=row.container_type,
         user_id=row.user_id,
         gitee_url=row.gitee_url,
         gitee_user=row.gitee_user,
@@ -1008,6 +1120,7 @@ def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         authorize_general_account=bool(row.authorize_general_account),
         status=status,
         endpoint=endpoint,
+        novnc_url=_autotest_novnc_url(row.container_id, row.container_type),
         started_at=started_at,
         expires_at=expires_at,
         cpu_usage=cpu_usage,

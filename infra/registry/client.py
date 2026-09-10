@@ -46,13 +46,24 @@ class RegistryClient:
     def __init__(self, timeout: float = 10.0) -> None:
         self._timeout = timeout
 
-    def check_image_pushed(self, registry: str, namespace: str, name: str, tag: str) -> bool:
-        """判断镜像是否已推送（Manifest 是否存在），不比对 Digest。"""
+    def check_image_pushed(
+        self,
+        registry: str,
+        namespace: str,
+        name: str,
+        tag: str,
+        timeout: float | None = None,
+    ) -> bool:
+        """判断镜像是否已推送（Manifest 是否存在），不比对 Digest。
+
+        可传入 `timeout` 覆盖实例默认超时；常用于批量可用性探测时对不可达
+        Registry 快速失败（默认 10s 太慢）。
+        """
         url = self._manifest_url(registry, namespace, name, tag)
         try:
             response = requests.head(
                 url,
-                timeout=self._timeout,
+                timeout=self._timeout if timeout is None else timeout,
                 headers={"Accept": _MANIFEST_ACCEPT},
                 allow_redirects=True,
             )

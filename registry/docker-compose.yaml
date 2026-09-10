@@ -1,0 +1,20 @@
+services:
+  registry:
+    image: registry:3
+    container_name: registry-test
+    restart: unless-stopped
+    ports:
+      - "5001:5000"
+
+  registry-ui:
+    image: joxit/docker-registry-ui:latest
+    container_name: registry-test-ui
+    restart: unless-stopped
+    ports:
+      - "5050:80"
+    environment:
+      - SINGLE_REGISTRY=true
+      - REGISTRY_TITLE=Local Docker Registry
+      - NGINX_PROXY_PASS_URL=http://registry-test:5000
+      - DELETE_IMAGES=true
+      - SHOW_CONTENT_DIGEST=true

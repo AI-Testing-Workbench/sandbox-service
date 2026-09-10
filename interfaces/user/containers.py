@@ -14,17 +14,35 @@ from typing import Optional
 from fastapi import APIRouter
 
 from application import container
+from domain.models import ContainerType
 from domain.models import add_hours_to_iso
 from interfaces.common_container_routes import register_container_action_routes
 from interfaces.common import api_responses
 from interfaces.user.schemas import (
     ContainerIdsResponse,
+    ContainerStatusListResponse,
     ContainerStatusResponse,
     CreateContainerRequest,
     CreateContainerResponse,
 )
 
 router = APIRouter(prefix="/user/containers", tags=["用户 API"])
+
+
+def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusResponse:
+    return ContainerStatusResponse(
+        container_id=view.container_id,
+        type=view.container_type,
+        status=view.status.value,
+        endpoint=view.endpoint,
+        novnc_url=view.novnc_url,
+        started_at=view.started_at,
+        expires_at=view.expires_at,
+        cpu_usage=view.cpu_usage,
+        memory_usage=view.memory_usage,
+        gitee_user=view.gitee_user,
+        gitee_repository=view.gitee_repository,
+    )
 
 
 @router.post(
@@ -38,6 +56,7 @@ def create_container(request: CreateContainerRequest) -> CreateContainerResponse
     created = container.create_container(
         container.CreateContainerParams(
             user_id=request.user_id,
+            container_type=request.type,
             gitee_url=request.gitee_url,
             gitee_user=request.gitee_user,
             gitee_repository=request.gitee_repository,
@@ -50,8 +69,10 @@ def create_container(request: CreateContainerRequest) -> CreateContainerResponse
     view = container.get_status(created.container_id)
     return CreateContainerResponse(
         container_id=created.container_id,
+        type=created.container_type.value,
         status=created.status.value,
         endpoint=view.endpoint,
+        novnc_url=view.novnc_url,
         started_at=view.started_at,
         expires_at=add_hours_to_iso(created.created_at, created.expiration_hours),
     )
@@ -63,6 +84,7 @@ def query_container_ids(
     gitee_user: Optional[str] = None,
     gitee_repository: Optional[str] = None,
     gitee_branch: Optional[str] = None,
+    type: Optional[ContainerType] = None,
 ) -> ContainerIdsResponse:
     """按条件查询容器 ID。"""
     ids = container.query_container_ids(
@@ -70,8 +92,28 @@ def query_container_ids(
         gitee_user=gitee_user,
         gitee_repository=gitee_repository,
         gitee_branch=gitee_branch,
+        container_type=type,
     )
     return ContainerIdsResponse(container_ids=ids)
+
+
+@router.get("/status", response_model=ContainerStatusListResponse, responses=api_responses("成功", 200, 400))
+def query_container_statuses(
+    user_id: str,
+    gitee_user: Optional[str] = None,
+    gitee_repository: Optional[str] = None,
+    gitee_branch: Optional[str] = None,
+    type: Optional[ContainerType] = None,
+) -> ContainerStatusListResponse:
+    """按条件一次性批量查询容器状态，避免先查 ID 列表再逐个查询的多轮往返。"""
+    views = container.query_container_statuses(
+        user_id=user_id,
+        gitee_user=gitee_user,
+        gitee_repository=gitee_repository,
+        gitee_branch=gitee_branch,
+        container_type=type,
+    )
+    return ContainerStatusListResponse(containers=[_to_status_response(view) for view in views])
 
 
 @router.get(
@@ -81,18 +123,7 @@ def query_container_ids(
 )
 def get_container_status(container_id: str) -> ContainerStatusResponse:
     """查询指定容器运行状态。"""
-    view = container.get_status(container_id)
-    return ContainerStatusResponse(
-        container_id=view.container_id,
-        status=view.status.value,
-        endpoint=view.endpoint,
-        started_at=view.started_at,
-        expires_at=view.expires_at,
-        cpu_usage=view.cpu_usage,
-        memory_usage=view.memory_usage,
-        gitee_user=view.gitee_user,
-        gitee_repository=view.gitee_repository,
-    )
+    return _to_status_response(container.get_status(container_id))
 
 
 register_container_action_routes(router, operation_id_prefix="user")

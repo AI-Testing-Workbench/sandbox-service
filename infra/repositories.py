@@ -67,6 +67,7 @@ class ContainerRepository:
         gitee_user: Optional[str] = None,
         gitee_repository: Optional[str] = None,
         gitee_branch: Optional[str] = None,
+        container_type: Optional[str] = None,
     ) -> list[Container]:
         """活跃记录（`deleted_at IS NULL`），查询条件 AND 组合，按创建时间倒序。"""
         stmt = select(Container).where(Container.deleted_at.is_(None))
@@ -78,6 +79,8 @@ class ContainerRepository:
             stmt = stmt.where(Container.gitee_repository == gitee_repository)
         if gitee_branch is not None:
             stmt = stmt.where(Container.gitee_branch == gitee_branch)
+        if container_type is not None:
+            stmt = stmt.where(Container.container_type == container_type)
         stmt = stmt.order_by(Container.created_at.desc())
         return list(self._session.scalars(stmt))
 
@@ -86,6 +89,7 @@ class ContainerRepository:
         user_id: Optional[str] = None,
         gitee_repository: Optional[str] = None,
         gitee_user: Optional[str] = None,
+        container_type: Optional[str] = None,
     ) -> int:
         """活跃记录数（`deleted_at IS NULL`，不含业务已删除）；供应用层数量/模式限制校验。"""
         conditions: list[ColumnElement[bool]] = [Container.deleted_at.is_(None)]
@@ -95,6 +99,8 @@ class ContainerRepository:
             conditions.append(Container.gitee_repository == gitee_repository)
         if gitee_user is not None:
             conditions.append(Container.gitee_user == gitee_user)
+        if container_type is not None:
+            conditions.append(Container.container_type == container_type)
         stmt = select(func.count()).select_from(Container).where(*conditions)
         return int(self._session.execute(stmt).scalar_one())
 

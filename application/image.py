@@ -25,6 +25,7 @@ from domain.errors import (
     ExternalDependencyError,
     InvalidArgumentError,
 )
+from domain.models import ContainerType
 from infra.docker.client import DockerClient
 from infra.docker.types import LocalImage
 from infra.registry.client import RegistryClient
@@ -38,6 +39,7 @@ __all__ = [
     "DeleteResult",
     "normalize_full_name",
     "list_images",
+    "check_image_push_states",
     "upload_image",
     "push_image",
     "set_default_image",
@@ -258,31 +260,55 @@ def _same_reference(left: str, right: Optional[str]) -> bool:
 # ---------------------------------------------------------------------------
 # 列表与可用性
 # ---------------------------------------------------------------------------
+#: 已推送探测的 Registry HEAD 超时；不可达 Registry 快速失败，避免拖慢镜像检查。
+_PUSHED_CHECK_TIMEOUT_S = 3.0
+
+
 def list_images() -> list[ImageRow]:
-    """列出本地 Docker 镜像并计算可用性（v4 §10.1 / §10.4）。
+    """列出本地 Docker 镜像（v4 §10.1 / §10.4）。
 
     - 一行 = 一个 RepoTag；无 RepoTag 的镜像（悬空镜像）跳过。
     - `full_name` 直接来自本地最终 RepoTag；上传流程会先将本地标签改为目标引用。
-    - 已推送判断、默认镜像匹配均针对每行自己的 `full_name`。
+    - 已推送状态默认不联网探测（避免慢 Registry 拖垮列表），仅标记默认镜像；
+      需要真实推送状态时由管理员手动触发 `check_image_push_states()`。
     """
+    return _collect_image_rows(check_pushed=False)
+
+
+def check_image_push_states() -> list[ImageRow]:
+    """手动全量刷新镜像推送状态（仅由管理员显式触发）。
+
+    - 逐行对 Registry 探测已推送状态，`DEFAULT` 状态按容器类型默认镜像匹配。
+    - 同一 Registry 首次探测失败即短路（按未推送处理），避免 N 个不可达镜像
+      × 超时 串行拖垮检查请求。
+    """
+    return _collect_image_rows(check_pushed=True)
+
+
+def _collect_image_rows(check_pushed: bool) -> list[ImageRow]:
     try:
         local_images = _docker().list_images()
     except Exception as exc:
         raise ExternalDependencyError("获取本地 Docker 镜像列表失败") from exc
 
-    default_ref = _cfg_get_default_image()
+    default_refs = [_cfg_get_default_image(container_type) for container_type in ContainerType]
     rows: list[ImageRow] = []
     seen_full_names: set[str] = set()
+    #: 本次请求内已探测到不可达的 Registry；同一 Registry 的后续镜像按未推送处理，
+    #: 避免 N 个外部镜像 × 超时 串行拖垮检查（检查仅由管理员手动触发）。
+    registry_unavailable: set[str] = set()
     for local in local_images:
-        _append_local_rows(rows, local, default_ref, seen_full_names)
+        _append_local_rows(rows, local, default_refs, seen_full_names, registry_unavailable, check_pushed)
     return rows
 
 
 def _append_local_rows(
     rows: list[ImageRow],
     local: LocalImage,
-    default_ref: Optional[str],
+    default_refs: list[Optional[str]],
     seen_full_names: set[str],
+    registry_unavailable: set[str],
+    check_pushed: bool,
 ) -> None:
     for repo_tag in local.tags:
         registry, namespace, name, tag = _parse_ref(repo_tag)
@@ -290,8 +316,11 @@ def _append_local_rows(
         if full_name in seen_full_names:
             continue
         seen_full_names.add(full_name)
-        pushed = _is_pushed(full_name)
-        is_default = _same_reference(full_name, default_ref)
+        pushed = _is_pushed(full_name, registry_unavailable) if check_pushed else False
+        is_default = any(
+            _same_reference(full_name, default_ref)
+            for default_ref in default_refs
+        )
         state = ImageState.DEFAULT if is_default else (ImageState.PUSHED if pushed else ImageState.NOT_PUSHED)
         rows.append(
             ImageRow(
@@ -308,16 +337,24 @@ def _append_local_rows(
         )
 
 
-def _is_pushed(full_name: str) -> bool:
+def _is_pushed(full_name: str, registry_unavailable: set[str]) -> bool:
     registry, namespace, name, tag = _parse_ref(full_name)
-    if not registry:
+    if not registry or registry in registry_unavailable:
         return False
     # noinspection broad-exception
     try:
-        return _registry().check_image_pushed(registry, namespace, name, tag)
+        return _registry().check_image_pushed(
+            registry,
+            namespace,
+            name,
+            tag,
+            timeout=_PUSHED_CHECK_TIMEOUT_S,
+        )
     except Exception:
-        # 不可达时不在列表层面失败：按未推送处理（保持列表可用），错误已由 infra 记录
-        logger.exception("已推送判断失败 (Registry 不可达)，按未推送处理")
+        # 不可达时不在列表层面失败：按未推送处理并跳过同一 Registry 的后续探测，
+        # 底层详细错误已由 infra 层记录，这里只提示一次。
+        registry_unavailable.add(registry)
+        logger.warning("已推送判断失败 (Registry 不可达)，本次列表按未推送处理并跳过该 Registry: %s", registry)
         return False
 
 
@@ -420,15 +457,20 @@ def push_image(full_name: str, tag: Optional[str] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 默认镜像管理
+# 默认镜像管理（按容器类型分开；testagent_cloud 沿用历史 settings key）
 # ---------------------------------------------------------------------------
-def get_default_image() -> Optional[str]:
-    """返回当前默认镜像完整引用；未配置返回 None（v4 §10.5）。"""
-    return _cfg_get_default_image()
+def get_default_image(
+    container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
+) -> Optional[str]:
+    """返回指定容器类型的默认镜像完整引用；未配置返回 None（v4 §10.5）。"""
+    return _cfg_get_default_image(container_type)
 
 
-def set_default_image(full_ref: str) -> str:
-    """设置默认镜像（完整引用）；仅已推送镜像可设为默认（v4 §10.5）。"""
+def set_default_image(
+    full_ref: str,
+    container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
+) -> str:
+    """设置指定容器类型的默认镜像（完整引用）；仅已推送镜像可设为默认（v4 §10.5）。"""
     canonical = normalize_full_name(full_ref)
     registry, namespace, name, tag = _parse_ref(canonical)
     try:
@@ -437,13 +479,15 @@ def set_default_image(full_ref: str) -> str:
         raise ExternalDependencyError("校验默认镜像已推送状态失败 (Registry 服务异常)") from exc
     if not pushed:
         raise BusinessConflictError("仅已推送的镜像可设为默认镜像")
-    _cfg_set_default_image(canonical)
+    _cfg_set_default_image(canonical, container_type)
     return canonical
 
 
-def unset_default_image() -> None:
-    """取消默认镜像（v4 §10.5）。"""
-    _cfg_set_default_image(None)
+def unset_default_image(
+    container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
+) -> None:
+    """取消指定容器类型的默认镜像（v4 §10.5）。"""
+    _cfg_set_default_image(None, container_type)
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +500,11 @@ def delete_image(full_ref: str, also_registry: bool = True) -> DeleteResult:
     - Registry 删除失败不抛错（由调用方提示）；本地失败抛 `ExternalDependencyError`。
     """
     docker_ref = _canonical_reference(full_ref)
-    if _same_reference(docker_ref, _cfg_get_default_image()):
+    default_refs = [_cfg_get_default_image(container_type) for container_type in ContainerType]
+    if any(
+        _same_reference(docker_ref, default_ref)
+        for default_ref in default_refs
+    ):
         raise BusinessConflictError("默认镜像不可删除")
     registry, namespace, name, tag = _parse_ref(docker_ref)
     try:

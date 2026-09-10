@@ -19,6 +19,7 @@ from typing import Optional
 
 __all__ = [
     "ContainerStatus",
+    "ContainerType",
     "GitStatus",
     "GitFinalStatus",
     "GIT_INTERMEDIATE_STATUSES",
@@ -44,6 +45,17 @@ class ContainerStatus(str, Enum):
     FAILED = "failed"
     BUSINESS_DELETED = "business_deleted"
     UNKNOWN = "unknown"
+
+
+class ContainerType(str, Enum):
+    """容器类型：同一底层镜像的不同启动方式（v4 §11.1）。
+
+    - `testagent_cloud`：开发/联调容器（仅 SSH）。
+    - `autotest_cloud`：自动化跑批容器（额外启用 Chrome/VNC，仍可通过 SSH 连入）。
+    """
+
+    TESTAGENT_CLOUD = "testagent_cloud"
+    AUTOTEST_CLOUD = "autotest_cloud"
 
 
 class GitStatus(str, Enum):
