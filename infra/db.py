@@ -53,8 +53,11 @@ def session_scope() -> Iterator[Session]:
 def init_db() -> None:
     """将数据库升级到最新架构版本；重复调用幂等。"""
     from infra.migrations import upgrade_database
+    from infra.git_crypto import initialize_git_credential_crypto
 
     upgrade_database(engine)
+    with session_scope() as session:
+        initialize_git_credential_crypto(session)
 
 
 def get_schema_version() -> int:

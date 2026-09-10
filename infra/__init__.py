@@ -9,6 +9,7 @@ from __future__ import annotations
 __all__ = [
     "db",
     "migrations",
+    "git_crypto",
     "orm",
     "repositories",
     "docker",
