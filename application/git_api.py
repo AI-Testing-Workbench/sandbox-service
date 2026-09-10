@@ -47,11 +47,11 @@ __all__ = [
 ]
 
 
-def get_git_state(resource_id: str, operator_user_id: Optional[str]) -> GitStatus:
+def get_git_state(service_id: str, operator_user_id: Optional[str]) -> GitStatus:
     """读取资源的详细 Git 状态。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     resource = get_git_session_store().resolve_service_resource(
-        resource_id,
+        service_id,
         operator_user_id,
     )
     if resource.session is not None:
@@ -65,7 +65,7 @@ def get_git_state(resource_id: str, operator_user_id: Optional[str]) -> GitStatu
 
 
 def report_git_status(
-    resource_id: str,
+    service_id: str,
     operator_user_id: Optional[str],
     git_status: str | GitStatus,
 ) -> GitStatus:
@@ -77,13 +77,13 @@ def report_git_status(
         raise InvalidArgumentError("Git 状态非法") from exc
 
     store = get_git_session_store()
-    resource = store.resolve_service_resource(resource_id, operator_user_id)
+    resource = store.resolve_service_resource(service_id, operator_user_id)
     session = resource.session
     if status in GIT_INTERMEDIATE_STATUSES:
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         _validate_transition(session, status)
-        store.update_status(resource_id, operator_user_id, status)
+        store.update_status(service_id, operator_user_id, status)
         return status
 
     try:
@@ -112,7 +112,7 @@ def report_git_status(
         raise ExternalDependencyError("保存 Git 初始化结果失败") from exc
 
     try:
-        store.end_session(resource_id, final_status=final_status)
+        store.end_session(service_id, final_status=final_status)
     except (GitSessionEndedError, GitResourceNotFoundError):
         # 会话可能已被异常清理；数据库最终状态已经成功写入。
         pass
@@ -120,18 +120,18 @@ def report_git_status(
 
 
 def get_git_credential(
-    resource_id: str,
+    service_id: str,
     operator_user_id: Optional[str],
 ) -> GitCredential:
     """领取临时或用户级凭证；无可用凭证时抛出携带状态的 409。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     store = get_git_session_store()
-    resource = store.resolve_service_resource(resource_id, operator_user_id)
+    resource = store.resolve_service_resource(service_id, operator_user_id)
     if resource.git_fin_status is not None and resource.git_fin_status.startswith("failed_"):
         raise GitCredentialConflictError(resource.git_fin_status)
     if resource.session is not None:
         try:
-            return store.claim_temporary_credential(resource_id, operator_user_id)
+            return store.claim_temporary_credential(service_id, operator_user_id)
         except GitCredentialAlreadyClaimedError:
             raise
         except GitCredentialUnavailableError:
@@ -150,7 +150,7 @@ def get_git_credential(
 
 
 def submit_git_credential(
-    resource_id: str,
+    service_id: str,
     operator_user_id: Optional[str],
     *,
     credential: GitCredential,
@@ -159,18 +159,18 @@ def submit_git_credential(
     """提交持久化或当前会话临时凭证，不返回密码。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     store = get_git_session_store()
-    resource = store.resolve_service_resource(resource_id, operator_user_id)
+    resource = store.resolve_service_resource(service_id, operator_user_id)
     if not credential.git_password.strip():
-        report_git_status(resource_id, operator_user_id, GitStatus.FAILED_USER_CANCELLED)
+        report_git_status(service_id, operator_user_id, GitStatus.FAILED_USER_CANCELLED)
         return
 
     stored = save_credential(resource.user_id, credential, persist=persist)
     if persist:
-        store.mark_credential_available(resource_id, operator_user_id)
+        store.mark_credential_available(service_id, operator_user_id)
     else:
         if stored is None:
             raise ExternalDependencyError("Git 临时凭证保存失败")
-        store.set_temporary_credential(resource_id, operator_user_id, stored)
+        store.set_temporary_credential(service_id, operator_user_id, stored)
 
 
 def _validate_transition(session: GitInitializationSession, target: GitStatus) -> None:

@@ -176,7 +176,7 @@ class GitSessionStore:
 
     def update_status(
         self,
-        resource_id: str,
+        service_id: str,
         operator_user_id: str,
         git_status: str | GitStatus,
     ) -> GitInitializationSession:
@@ -185,7 +185,7 @@ class GitSessionStore:
             status = coerce_git_status(git_status)
         except ValueError as exc:
             raise InvalidArgumentError("Git 状态非法") from exc
-        resource = self.resolve_service_resource(resource_id, operator_user_id)
+        resource = self.resolve_service_resource(service_id, operator_user_id)
         if resource.session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         with self._lock:
@@ -196,12 +196,12 @@ class GitSessionStore:
 
     def set_temporary_credential(
         self,
-        resource_id: str,
+        service_id: str,
         operator_user_id: str,
         credential: GitCredential,
     ) -> GitInitializationSession:
         """将非持久化凭证保存到当前资源的进程内存会话。"""
-        resource = self.resolve_service_resource(resource_id, operator_user_id)
+        resource = self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
@@ -219,11 +219,11 @@ class GitSessionStore:
 
     def mark_credential_available(
         self,
-        resource_id: str,
+        service_id: str,
         operator_user_id: str,
     ) -> GitInitializationSession:
         """标记持久化凭证已可领取；明文凭证仍不进入会话。"""
-        resource = self.resolve_service_resource(resource_id, operator_user_id)
+        resource = self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
@@ -236,11 +236,11 @@ class GitSessionStore:
 
     def claim_temporary_credential(
         self,
-        resource_id: str,
+        service_id: str,
         operator_user_id: str,
     ) -> GitCredential:
         """原子领取并清除当前会话的临时明文凭证。"""
-        resource = self.resolve_service_resource(resource_id, operator_user_id)
+        resource = self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitCredentialUnavailableError("当前资源没有临时凭证")
@@ -274,12 +274,12 @@ class GitSessionStore:
 
     def end_session(
         self,
-        resource_id: str,
+        service_id: str,
         *,
         final_status: Optional[str | GitFinalStatus | GitStatus] = None,
     ) -> None:
         """清除会话敏感数据并移除活跃映射；数据库最终写入由 C53.9 负责。"""
-        resource_id = _require_id(resource_id, "resource_id")
+        service_id = _require_id(service_id, "service_id")
         final_git_status: Optional[GitStatus] = None
         if final_status is not None:
             try:
@@ -288,9 +288,9 @@ class GitSessionStore:
                 raise InvalidArgumentError("Git 最终状态非法") from exc
 
         with self._lock:
-            session = self._by_service_id.get(resource_id)
+            session = self._by_service_id.get(service_id)
             if session is None:
-                self._raise_missing_active_session(resource_id)
+                self._raise_missing_active_session(service_id)
             if final_git_status is not None:
                 session.git_status = final_git_status
             session.clear_temporary_credential()
@@ -333,8 +333,8 @@ class GitSessionStore:
             expired = self._ended_service_order.popleft()
             self._ended_service_sessions.pop(expired, None)
 
-    def _raise_missing_active_session(self, resource_id: str) -> NoReturn:
-        if resource_id in self._ended_service_sessions:
+    def _raise_missing_active_session(self, service_id: str) -> NoReturn:
+        if service_id in self._ended_service_sessions:
             raise GitSessionEndedError("Git 初始化会话已结束")
         raise GitResourceNotFoundError("Git service_id 不存在")
 
