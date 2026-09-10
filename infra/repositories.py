@@ -132,6 +132,14 @@ class ContainerRepository:
         if container is not None:
             container.expiration_hours = expiration_hours
 
+    def update_git_fin_status(self, container_id: str, git_fin_status: str) -> bool:
+        """更新 Git 初始化最终状态；不存在时返回 False，暂不提交事务。"""
+        container = self.get(container_id)
+        if container is None:
+            return False
+        container.git_fin_status = git_fin_status
+        return True
+
 
 class SettingsRepository:
     """`settings` 表数据访问（config.py 的默认镜像 / 数量限制读写经本仓储）。"""

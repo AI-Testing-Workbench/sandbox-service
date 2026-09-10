@@ -248,6 +248,25 @@ class GitSessionStore:
             session.credential_claimed = False
             return session
 
+    def mark_credential_available(
+        self,
+        resource_id: str,
+        operator_user_id: str,
+    ) -> GitInitializationSession:
+        """标记持久化凭证已可领取；明文凭证仍不进入会话。"""
+        resource = self.resolve_resource(resource_id, operator_user_id)
+        session = (
+            resource.session
+            if resource.session is not None
+            else self.get_or_create_container_session(resource_id, operator_user_id)
+        )
+        with self._lock:
+            if session.ended:
+                raise GitSessionEndedError("Git 初始化会话已结束")
+            session.credential_available = True
+            session.credential_claimed = False
+            return session
+
     def claim_temporary_credential(
         self,
         resource_id: str,

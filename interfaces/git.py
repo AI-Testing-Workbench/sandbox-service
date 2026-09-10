@@ -1,18 +1,19 @@
 """
 Git 初始化与凭证 API 合同（C53.8）。
 
-本模块只定义请求/响应 Schema、路径和请求头依赖；状态转换、凭证存取和最终结果事务
-由后续 application 层任务实现。响应模型不包含 `service_id` 或 `container_id`。
+本模块定义请求/响应 Schema、路径和请求头依赖；业务处理委托给 application 层服务。
+响应模型不包含 `service_id` 或 `container_id`。
 """
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, NoReturn
+from typing import Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
 
-from domain.errors import ExternalDependencyError
+from application import git_api as git_service
+from application.git_credentials import GitCredential
 from domain.models import GitStatus
 from interfaces.auth import get_operator_user_id
 from interfaces.common import api_responses
@@ -87,7 +88,9 @@ router = APIRouter(prefix="/git", tags=["Git 凭证 API"])
 )
 def get_git_state(resource_id: str, operator_user_id: OperatorUserId) -> GitStateResponse:
     """获取 Git 详细状态。"""
-    _defer_git_application_logic()
+    return GitStateResponse(
+        git_status=git_service.get_git_state(resource_id, operator_user_id)
+    )
 
 
 @router.post(
@@ -102,7 +105,13 @@ def report_git_state(
     operator_user_id: OperatorUserId,
 ) -> GitReportResponse:
     """统一接收 Git 中间状态和最终状态。"""
-    _defer_git_application_logic()
+    return GitReportResponse(
+        git_status=git_service.report_git_status(
+            resource_id,
+            operator_user_id,
+            request.git_status,
+        )
+    )
 
 
 @router.get(
@@ -121,7 +130,13 @@ def get_git_credential(
     operator_user_id: OperatorUserId,
 ) -> GitCredentialResponse:
     """领取当前授权资源的 Git 凭证。"""
-    _defer_git_application_logic()
+    credential = git_service.get_git_credential(resource_id, operator_user_id)
+    return GitCredentialResponse(
+        type=cast(Literal["password"], credential.type),
+        git_username=credential.git_username,
+        git_email=credential.git_email,
+        git_password=credential.git_password,
+    )
 
 
 @router.post(
@@ -136,9 +151,15 @@ def submit_git_credential(
     operator_user_id: OperatorUserId,
 ) -> Response:
     """提交 Git 凭证；响应不返回密码。"""
-    _defer_git_application_logic()
-
-
-def _defer_git_application_logic() -> NoReturn:
-    """C53.8 只注册合同，具体应用逻辑由 C53.9 接入。"""
-    raise ExternalDependencyError("Git API 业务逻辑尚未接入")
+    git_service.submit_git_credential(
+        resource_id,
+        operator_user_id,
+        credential=GitCredential(
+            type=request.type,
+            git_username=request.git_username,
+            git_email=request.git_email,
+            git_password=request.git_password,
+        ),
+        persist=request.persist,
+    )
+    return Response(status_code=204)

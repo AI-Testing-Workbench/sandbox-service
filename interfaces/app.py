@@ -64,7 +64,7 @@ def create_app() -> FastAPI:
             )
         return JSONResponse(
             status_code=exc.http_status,
-            content={"code": exc.code, "message": exc.message},
+            content=_app_error_content(exc),
         )
 
     @app.exception_handler(RequestValidationError)
@@ -140,3 +140,12 @@ def _authorized(request: Request) -> bool:
     return secrets.compare_digest(username, settings.rest_api_username) and secrets.compare_digest(
         password, settings.rest_api_password
     )
+
+
+def _app_error_content(exc: AppError) -> dict[str, str]:
+    """构造统一错误响应；Git 凭证 409 可额外携带详细状态。"""
+    content = {"code": exc.code, "message": exc.message}
+    git_status = getattr(exc, "git_status", None)
+    if isinstance(git_status, str):
+        content["git_status"] = git_status
+    return content
