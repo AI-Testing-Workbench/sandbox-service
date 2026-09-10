@@ -1,5 +1,6 @@
 """
-表定义（v4 §6.2）：`containers`、`settings`、`whitelist_users`、`admin_users`；
+表定义（v4 §6.2）：`containers`、`settings`、`whitelist_users`、`admin_users`、
+`git_credentials`；
 另含由迁移维护的 `schema_version` 元数据表。
 
 注：`containers` 表不设唯一约束；模式/数量限制在应用层（application）校验，
@@ -10,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, Integer, String
+from sqlalchemy import Boolean, CheckConstraint, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 __all__ = [
@@ -19,6 +20,7 @@ __all__ = [
     "SettingsRow",
     "WhitelistUserRow",
     "AdminUserRow",
+    "GitCredentialRow",
     "SchemaVersionRow",
 ]
 
@@ -31,6 +33,15 @@ class Container(Base):
     """`containers` 容器业务数据（含 Gitee 仓库地址）。"""
 
     __tablename__ = "containers"
+    __table_args__ = (
+        CheckConstraint(
+            "git_fin_status IS NULL OR git_fin_status IN "
+            "('initialized', 'failed_timeout', 'failed_max_attempts', "
+            "'failed_unexpected_state', 'failed_git', 'failed_service', "
+            "'failed_container', 'failed_initialize', 'failed_user_cancelled')",
+            name="ck_containers_git_fin_status",
+        ),
+    )
 
     container_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     image: Mapped[str] = mapped_column(String(512))
@@ -50,6 +61,26 @@ class Container(Base):
     created_at: Mapped[str] = mapped_column(String(32))
     expiration_hours: Mapped[int] = mapped_column(Integer)
     deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    git_fin_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+
+class GitCredentialRow(Base):
+    """`git_credentials` 用户级 Git 密码凭证（密码列保存密文）。"""
+
+    __tablename__ = "git_credentials"
+    __table_args__ = (
+        CheckConstraint(
+            "type = 'password'",
+            name="ck_git_credentials_type_password",
+        ),
+    )
+
+    # 字段顺序是跨软件 Git 凭证设计报告 §2.1 的数据库合同。
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    type: Mapped[str] = mapped_column(Text, nullable=False)
+    git_username: Mapped[str] = mapped_column(Text, nullable=False)
+    git_email: Mapped[str] = mapped_column(Text, nullable=False)
+    git_password: Mapped[str] = mapped_column(Text, nullable=False)
 
 
 class SettingsRow(Base):
