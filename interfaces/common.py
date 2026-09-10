@@ -34,7 +34,7 @@ class ContainerCreateRequestBase(BaseModel):
     user_id: str = Field(description="用户 ID")
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="容器类型：testagent_cloud 开发环境 / autotest_cloud 自动化跑批（启用 Chrome/VNC）",
+        description="容器类型：testagent_cloud TestAgentCloud / autotest_cloud 自动化跑批（启用 Chrome/VNC）",
     )
     gitee_user: Optional[str] = Field(default=None, description="码云用户名")
     gitee_repository: Optional[str] = Field(default=None, description="码云仓库")
