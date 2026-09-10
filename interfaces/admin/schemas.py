@@ -30,6 +30,7 @@ __all__ = [
     "UserIdsResponse",
     "UserMutationResponse",
     "AdminCreateContainerRequest",
+    "AdminCreateContainerResponse",
     "AdminContainerResponse",
     "AdminContainerListResponse",
     "OrphanContainerListResponse",
@@ -59,7 +60,7 @@ class SetDefaultImageRequest(ImageReferenceRequest):
 
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="容器类型：testagent_cloud / autotest_cloud",
+        description="容器类型: testagent_cloud / autotest_cloud",
     )
 
 
@@ -89,7 +90,7 @@ class DefaultImageResponse(BaseModel):
     full_name: Optional[str] = Field(default=None, description="当前的默认镜像，未设置时为空")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="容器类型：testagent_cloud / autotest_cloud",
+        description="容器类型: testagent_cloud / autotest_cloud",
     )
 
 
@@ -162,6 +163,12 @@ class AdminContainerResponse(ContainerRuntimeResponse):
     authorize_general_account: bool = Field(description="是否授权通用码云账户登录")
     deleted_at: Optional[str] = Field(default=None, description="业务删除时间，未业务删除时为空")
     business_deleted: bool = Field(description="是否已业务删除")
+
+
+class AdminCreateContainerResponse(AdminContainerResponse):
+    """管理员创建响应；仅创建响应额外返回 Git 初始化 service_id。"""
+
+    service_id: str = Field(description="容器初始化时的服务 ID")
 
 
 class AdminContainerListResponse(BaseModel):

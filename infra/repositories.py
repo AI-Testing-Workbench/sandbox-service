@@ -266,12 +266,13 @@ class GitCredentialRepository:
             self._session.add(credential)
             return credential
 
-        if row is not credential:
-            row.type = credential.type
-            row.git_username = credential.git_username
-            row.git_email = credential.git_email
-            row.git_password = credential.git_password
-        return row
+        existing: GitCredentialRow = row
+        if existing is not credential:
+            existing.type = credential.type
+            existing.git_username = credential.git_username
+            existing.git_email = credential.git_email
+            existing.git_password = credential.git_password
+        return existing
 
     def delete(self, user_id: str) -> None:
         """删除用户凭证；不存在时无操作。"""

@@ -69,6 +69,7 @@ def create_container(request: CreateContainerRequest) -> CreateContainerResponse
     view = container.get_status(created.container_id)
     return CreateContainerResponse(
         container_id=created.container_id,
+        service_id=created.service_id,
         type=created.container_type.value,
         status=created.status.value,
         endpoint=view.endpoint,
@@ -84,7 +85,7 @@ def query_container_ids(
     gitee_user: Optional[str] = None,
     gitee_repository: Optional[str] = None,
     gitee_branch: Optional[str] = None,
-    type: Optional[ContainerType] = None,
+    container_type: Optional[ContainerType] = None,
 ) -> ContainerIdsResponse:
     """按条件查询容器 ID。"""
     ids = container.query_container_ids(
@@ -92,7 +93,7 @@ def query_container_ids(
         gitee_user=gitee_user,
         gitee_repository=gitee_repository,
         gitee_branch=gitee_branch,
-        container_type=type,
+        container_type=container_type,
     )
     return ContainerIdsResponse(container_ids=ids)
 
@@ -103,7 +104,7 @@ def query_container_statuses(
     gitee_user: Optional[str] = None,
     gitee_repository: Optional[str] = None,
     gitee_branch: Optional[str] = None,
-    type: Optional[ContainerType] = None,
+    container_type: Optional[ContainerType] = None,
 ) -> ContainerStatusListResponse:
     """按条件一次性批量查询容器状态，避免先查 ID 列表再逐个查询的多轮往返。"""
     views = container.query_container_statuses(
@@ -111,7 +112,7 @@ def query_container_statuses(
         gitee_user=gitee_user,
         gitee_repository=gitee_repository,
         gitee_branch=gitee_branch,
-        container_type=type,
+        container_type=container_type,
     )
     return ContainerStatusListResponse(containers=[_to_status_response(view) for view in views])
 

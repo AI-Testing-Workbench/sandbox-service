@@ -80,6 +80,7 @@ def _synchronize_schema_version(connection: Connection) -> None:
 def get_schema_version(engine: Engine) -> int:
     """读取 `schema_version` 中的 INTEGER 版本值。"""
     with engine.connect() as connection:
+        # noinspection unnecessary-cast
         value = cast(
             int | str | None,
             connection.execute(

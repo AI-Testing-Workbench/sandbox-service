@@ -47,7 +47,8 @@ class CreateContainerRequest(ContainerCreateRequestBase):
 
 class CreateContainerResponse(BaseModel):
     container_id: str = Field(description="容器 ID")
-    type: str = Field(default="testagent_cloud", description="容器类型：testagent_cloud / autotest_cloud")
+    service_id: str = Field(description="本次 Git 初始化服务会话 ID")
+    type: str = Field(default="testagent_cloud", description="容器类型: testagent_cloud / autotest_cloud")
     novnc_url: str | None = Field(
         default=None,
         description="autotest_cloud 容器的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",

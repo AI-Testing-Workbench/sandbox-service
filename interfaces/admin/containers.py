@@ -14,6 +14,7 @@ from interfaces.admin.schemas import (
     AdminContainerListResponse,
     AdminContainerResponse,
     AdminCreateContainerRequest,
+    AdminCreateContainerResponse,
     ContainerLimitRequest,
     ContainerLimitResponse,
     ExpirationRequest,
@@ -40,7 +41,7 @@ router = APIRouter(
 # 管理端容器接口顺序：增加、批量获取、单项获取、日志、Start、Stop、Restart、删除、永久删除、Expiration、恢复
 @router.post(
     "",
-    response_model=AdminContainerResponse,
+    response_model=AdminCreateContainerResponse,
     status_code=200,
     responses=api_responses("成功", 200, 400, 409, 502),
 )
@@ -66,7 +67,8 @@ def create_container(request: AdminCreateContainerRequest) -> AdminContainerResp
             memory=request.memory,
         )
     )
-    return _container_response(container_service.get_admin_container(created.container_id))
+    view = _container_response(container_service.get_admin_container(created.container_id))
+    return AdminCreateContainerResponse(**view.model_dump(), service_id=created.service_id)
 
 
 @router.get(

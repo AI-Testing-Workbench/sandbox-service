@@ -12,14 +12,19 @@ from __future__ import annotations
 
 import logging
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import Callable, Optional, cast
 from zoneinfo import ZoneInfo
 
 from config import Constants, settings
 from application import container as _container
-from domain.models import ContainerStatus, add_hours_to_iso, map_runtime_state
+from domain.models import (
+    ContainerStatus,
+    add_hours_to_iso,
+    map_runtime_state,
+    resolve_container_status,
+)
 from infra.db import session_scope
 from infra.opensandbox.client import OpenSandboxError, SandboxNotFoundError
 from infra.opensandbox.types import SandboxMetrics
@@ -220,6 +225,7 @@ def refresh_status_cache() -> None:
                 current = ContainerRepository(session).get(row.container_id)
             if current is None or current.deleted_at is not None:
                 continue
+            current_git_fin_status = current.git_fin_status
 
             try:
                 runtime, missing, failed = _fetch_runtime_status(row.container_id)
@@ -254,6 +260,13 @@ def refresh_status_cache() -> None:
             continue
         active_ids.add(row.container_id)
         if runtime is not None:
+            runtime = replace(
+                runtime,
+                status=resolve_container_status(
+                    current_git_fin_status,
+                    runtime.status,
+                ),
+            )
             updates[row.container_id] = runtime
             update_versions[row.container_id] = cache_version
             failed_count += int(failed)

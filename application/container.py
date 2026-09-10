@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import threading
 import uuid
 from contextlib import contextmanager
@@ -40,7 +41,7 @@ from domain.models import (
     ContainerStatus,
     ContainerType,
     add_hours_to_iso,
-    map_runtime_state,
+    resolve_container_status,
 )
 from infra.db import session_scope
 from infra.opensandbox.client import (
@@ -60,6 +61,7 @@ from infra.repositories import (
     ContainerRepository,
     WhitelistUserRepository,
 )
+from application.git_sessions import get_git_session_store
 
 if TYPE_CHECKING:
     from infra.opensandbox.client import OpenSandboxClient
@@ -109,6 +111,16 @@ _CONTAINER_TYPE_METADATA_KEY = "container-type"
 _NOVNC_PORT = 6080
 
 
+# noinspection HttpUrlsUsage
+def _service_url() -> str:
+    """返回容器内启动脚本访问沙盒服务的 HTTP 基础地址。"""
+    configured = os.environ.get("TA_SS_SERVICE_URL", "").strip()
+    if configured:
+        return configured.rstrip("/")
+    return f"http://host.docker.internal:{settings.rest_api_port}"
+
+
+# noinspection HttpUrlsUsage
 def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
     """由容器内 noVNC(6080) 的 endpoint 构造简洁的浏览器访问地址。
 
@@ -133,11 +145,12 @@ def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
     elif lowered.startswith("http://"):
         candidate = candidate[len("http://"):]
     parsed = urlsplit(f"{scheme}://{candidate}")
-    if not parsed.hostname:
+    hostname = parsed.hostname
+    if not hostname:
         return None
     port = parsed.port or (443 if scheme == "https" else 80)
     page_path = parsed.path.rstrip("/") + "/vnc.html"
-    return urlunsplit((scheme, f"{parsed.hostname}:{port}", page_path, "", ""))
+    return urlunsplit((scheme, f"{hostname}:{port}", page_path, "", ""))
 
 
 def _autotest_novnc_url(container_id: str, container_type_value: str) -> Optional[str]:
@@ -147,6 +160,7 @@ def _autotest_novnc_url(container_id: str, container_type_value: str) -> Optiona
     """
     if container_type_value != ContainerType.AUTOTEST_CLOUD.value:
         return None
+    # noinspection broad-exception
     try:
         ep = get_opensandbox_client().get_endpoint(container_id, _NOVNC_PORT)
     except Exception:
@@ -203,6 +217,7 @@ class CreatedContainer:
     authorize_general_account: bool
     created_at: str
     status: ContainerStatus
+    service_id: str
 
 
 @dataclass(frozen=True)
@@ -308,17 +323,18 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
     - 镜像：`params.image` 为空则使用**该容器类型**的默认镜像；默认镜像未配置抛 400 语义错误。
     - 创建限制（模式 / 数量）在此校验，白名单用户跳过全部；并发通过进程互斥 + SQLite 单写者保证。
     - 容器名：随机字符串（仅表示容器本身，不承载业务信息）；端口固定 22；
-     环境变量注入 `TESTAGENT_CLOUD_USER_ID` / `TESTAGENT_CLOUD_GITEE_URL` /
-       `TESTAGENT_CLOUD_GITEE_USER` / `TESTAGENT_CLOUD_GITEE_REPOSITORY` /
-       `TESTAGENT_CLOUD_GITEE_BRANCH`（为空也注入空值）
-       及 `TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT`（true/false），并注入
-       `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY` 代理源；CPU / 内存可选覆盖默认资源限制。
-       OpenSandbox metadata 额外注入 `testagent-cloud=true`（来源识别）与
-       `container-type=<type>`（类型识别）。
+      环境变量注入 `TESTAGENT_CLOUD_SERVICE_USER` /
+      `TESTAGENT_CLOUD_SERVICE_ID` / `TESTAGENT_CLOUD_SERVICE_URL` /
+      `TESTAGENT_CLOUD_GITEE_USER` / `TESTAGENT_CLOUD_GITEE_REPOSITORY` /
+      `TESTAGENT_CLOUD_GITEE_BRANCH`（为空也注入空值）
+      及 `TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT`（true/false），并注入
+      `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY` 代理源；CPU / 内存可选覆盖默认资源限制。
+      OpenSandbox metadata 额外注入 `testagent-cloud=true`（来源识别）与
+      `container-type=<type>`（类型识别）。
     - 类型：`testagent_cloud`（默认）只起 SSH；`autotest_cloud` 额外注入
-       `TESTAGENT_ENABLE_CHROME=1`（镜像内拉起 Chrome/VNC，sshd 仍可 SSH 连入），
-       两者底层为同一镜像、仅启动方式不同。
-     """
+        `TESTAGENT_ENABLE_CHROME=1`（镜像内拉起 Chrome/VNC，sshd 仍可 SSH 连入），
+        两者底层为同一镜像、仅启动方式不同。
+    """
     _validate_required(params)
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
     gitee_user = _normalise_optional_gitee_value(params.gitee_user)
@@ -340,9 +356,17 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 params.container_type,
             )
 
-        env = {
+        git_session = get_git_session_store().create_session(params.user_id)
+        service_id = git_session.service_id
+        if service_id is None:
+            raise ExternalDependencyError("创建 Git 初始化会话失败")
+
+        container_type_value: str = params.container_type.value
+        env: dict[str, str] = {
             "TESTAGENT_CLOUD_MODE": "1",  # 标记容器为云端
-            "TESTAGENT_CLOUD_USER_ID": params.user_id,
+            "TESTAGENT_CLOUD_SERVICE_USER": params.user_id,
+            "TESTAGENT_CLOUD_SERVICE_ID": service_id,
+            "TESTAGENT_CLOUD_SERVICE_URL": _service_url(),
             "TESTAGENT_CLOUD_GITEE_USER": gitee_user,
             "TESTAGENT_CLOUD_GITEE_REPOSITORY": gitee_repository,
             "TESTAGENT_CLOUD_GITEE_BRANCH": params.gitee_branch or "",
@@ -358,22 +382,26 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             env["TESTAGENT_ENABLE_CHROME"] = "1"
 
         container_name = uuid.uuid4().hex[:12]
+        metadata: dict[str, str] = {
+            "name": container_name,
+            _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+            _CONTAINER_TYPE_METADATA_KEY: container_type_value,
+        }
         try:
             created: CreatedSandbox = get_opensandbox_client().create(
                 image,
                 name=container_name,
                 env=env,
-                metadata={
-                    "name": container_name,
-                    _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
-                    _CONTAINER_TYPE_METADATA_KEY: params.container_type.value,
-                },
+                metadata=metadata,
                 resource_limits=_resource_limits(params),
             )
         except Exception as exc:
             # 创建响应丢失但远端已完成创建时，SDK 无法提供容器 ID；使用本次唯一的
             # metadata name 找回并回收这个无法直接寻址的远端资源。
-            _cleanup_failed_remote_create(container_name)
+            try:
+                _cleanup_failed_remote_create(container_name)
+            finally:
+                get_git_session_store().discard_session(service_id)
             if _is_image_not_found_error(exc):
                 if params.image is None:
                     raise DefaultImageNotConfiguredError(
@@ -385,6 +413,11 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             _raise_backend_service_error("创建容器", exc)
 
         container_id = created.container_id
+        try:
+            get_git_session_store().bind_container_id(service_id, container_id)
+        except Exception as exc:
+            _cleanup_created_container(container_id, service_id)
+            raise ExternalDependencyError("绑定 Git 初始化会话失败") from exc
         created_at = _now_iso()
         try:
             with session_scope() as session:
@@ -392,7 +425,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                     ContainerRow(
                         container_id=container_id,
                         user_id=params.user_id,
-                        container_type=params.container_type.value,
+                        container_type=container_type_value,
                         gitee_url=gitee_url,
                         gitee_user=gitee_user,
                         gitee_repository=gitee_repository,
@@ -405,12 +438,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 )
         except Exception as exc:
             logger.exception("容器已创建但保存数据库记录失败: %s", container_id)
-            # noinspection broad-exception
-            try:
-                # 数据库写入失败时尽力回收远端容器，避免留下孤儿资源。
-                get_opensandbox_client().delete(container_id)
-            except Exception:  # noqa: BLE001
-                logger.exception("数据库写入失败后回收远端容器失败: %s", container_id)
+            _cleanup_created_container(container_id, service_id)
             raise ExternalDependencyError("保存容器记录失败") from exc
 
         return CreatedContainer(
@@ -421,7 +449,20 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             authorize_general_account=params.authorize_general_account is True,
             created_at=created_at,
             status=ContainerStatus.PENDING,
+            service_id=service_id,
         )
+
+
+def _cleanup_created_container(container_id: str, service_id: str) -> None:
+    """回收已创建的远端容器并清理对应的 Git 内存会话。"""
+    # noinspection broad-exception
+    try:
+        # 数据库写入失败或会话绑定失败时尽力回收远端容器，避免留下孤儿资源。
+        get_opensandbox_client().delete(container_id)
+    except Exception:  # noqa: BLE001
+        logger.exception("创建后回收远端容器失败: %s", container_id)
+    finally:
+        get_git_session_store().discard_session(service_id)
 
 
 def _cleanup_failed_remote_create(container_name: str) -> None:
@@ -580,7 +621,7 @@ def get_status(container_id: str) -> ContainerStatusView:
     except Exception as exc:
         _raise_backend_service_error("获取容器状态", exc)
 
-    business = map_runtime_state(status.state)
+    business = resolve_container_status(row.git_fin_status, status.state)
     endpoint: Optional[str] = None
     # noinspection broad-exception
     try:
@@ -1099,7 +1140,7 @@ def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         expires_at = add_hours_to_iso(row.created_at, row.expiration_hours)
     else:
         runtime = _get_admin_runtime(row.container_id)
-        status = runtime.status
+        status = resolve_container_status(row.git_fin_status, runtime.status)
         endpoint = runtime.endpoint
         started_at = runtime.started_at
         expires_at = runtime.expires_at
