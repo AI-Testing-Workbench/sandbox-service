@@ -128,6 +128,7 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
                     "gitee_url": "https://github.com",
                     "expiration_hours": settings.container_default_expiration_hours,
                     "authorize_general_account": False,
+                    "type": "testagent_cloud",
                     "cpu": 1,
                     "memory": 1,
                 }
