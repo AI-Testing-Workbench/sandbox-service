@@ -227,7 +227,7 @@ def refresh_status_cache() -> None:
                 current = ContainerRepository(session).get(row.container_id)
             if current is None or current.deleted_at is not None:
                 continue
-            current_git_fin_status = current.git_fin_status
+            current_git_fin_status = getattr(current, "git_fin_status", None)
 
             try:
                 runtime, missing, failed = _fetch_runtime_status(row.container_id)

@@ -205,8 +205,7 @@ def _float(
             raise ConfigError(f"环境变量 {_ENV_PREFIX + name} 无法解析为数字: {raw!r}")
 
     if not math.isfinite(value):
-        raw: str
-        raise ConfigError(f"环境变量 {_ENV_PREFIX + name} 必须为有限数字: {raw!r}")
+        raise ConfigError(f"环境变量 {_ENV_PREFIX + name} 必须为有限数字: {value!r}")
     if minimum is not None and value < minimum:
         raise ConfigError(
             f"环境变量 {_ENV_PREFIX + name} 必须大于等于 {minimum}: {value}"
