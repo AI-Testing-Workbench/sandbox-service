@@ -29,7 +29,6 @@ from domain.errors import (
 )
 from domain.models import (
     GIT_INTERMEDIATE_STATUSES,
-    GitFinalStatus,
     GitStatus,
     coerce_git_final_status,
     coerce_git_status,
@@ -51,7 +50,10 @@ __all__ = [
 def get_git_state(resource_id: str, operator_user_id: Optional[str]) -> GitStatus:
     """读取资源的详细 Git 状态。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
-    resource = get_git_session_store().resolve_resource(resource_id, operator_user_id)
+    resource = get_git_session_store().resolve_service_resource(
+        resource_id,
+        operator_user_id,
+    )
     if resource.session is not None:
         return resource.session.git_status
     if resource.git_fin_status is None:
@@ -75,11 +77,11 @@ def report_git_status(
         raise InvalidArgumentError("Git 状态非法") from exc
 
     store = get_git_session_store()
-    resource = store.resolve_resource(resource_id, operator_user_id)
+    resource = store.resolve_service_resource(resource_id, operator_user_id)
     session = resource.session
     if status in GIT_INTERMEDIATE_STATUSES:
         if session is None:
-            session = store.get_or_create_container_session(resource_id, operator_user_id)
+            raise GitSessionEndedError("Git 初始化会话已结束")
         _validate_transition(session, status)
         store.update_status(resource_id, operator_user_id, status)
         return status
@@ -88,10 +90,10 @@ def report_git_status(
         final_status = coerce_git_final_status(status)
     except ValueError as exc:
         raise InvalidArgumentError("Git 最终状态非法") from exc
-    if resource.container_id is None:
-        raise InvalidArgumentError("Git 资源未绑定 container_id")
     if resource.git_fin_status is not None:
         raise BusinessConflictError("Git 初始化已经有最终状态")
+    if resource.container_id is None:
+        raise GitSessionEndedError("Git 初始化会话已结束")
     if session is not None and session.ended:
         raise GitSessionEndedError("Git 初始化会话已结束")
 
@@ -112,7 +114,7 @@ def report_git_status(
     try:
         store.end_session(resource_id, final_status=final_status)
     except (GitSessionEndedError, GitResourceNotFoundError):
-        # 运行中的 container_id 可能没有活跃初始化会话；数据库最终状态已经成功写入。
+        # 会话可能已被异常清理；数据库最终状态已经成功写入。
         pass
     return GitStatus(final_status.value)
 
@@ -124,7 +126,9 @@ def get_git_credential(
     """领取临时或用户级凭证；无可用凭证时抛出携带状态的 409。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     store = get_git_session_store()
-    resource = store.resolve_resource(resource_id, operator_user_id)
+    resource = store.resolve_service_resource(resource_id, operator_user_id)
+    if resource.git_fin_status is not None and resource.git_fin_status.startswith("failed_"):
+        raise GitCredentialConflictError(resource.git_fin_status)
     if resource.session is not None:
         try:
             return store.claim_temporary_credential(resource_id, operator_user_id)
@@ -155,7 +159,7 @@ def submit_git_credential(
     """提交持久化或当前会话临时凭证，不返回密码。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     store = get_git_session_store()
-    resource = store.resolve_resource(resource_id, operator_user_id)
+    resource = store.resolve_service_resource(resource_id, operator_user_id)
     if not credential.git_password.strip():
         report_git_status(resource_id, operator_user_id, GitStatus.FAILED_USER_CANCELLED)
         return

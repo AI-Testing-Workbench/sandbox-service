@@ -54,6 +54,7 @@ def upgrade_database(engine: Engine) -> None:
             _synchronize_schema_version(connection)
 
 
+# noinspection SqlDialectInspection
 def _synchronize_schema_version(connection: Connection) -> None:
     """将已提交的 Alembic 数字 revision 写入 INTEGER 版本表。"""
     revisions = list(
@@ -77,6 +78,7 @@ def _synchronize_schema_version(connection: Connection) -> None:
         raise RuntimeError("数据库缺少 schema_version 初始版本记录")
 
 
+# noinspection SqlDialectInspection
 def get_schema_version(engine: Engine) -> int:
     """读取 `schema_version` 中的 INTEGER 版本值。"""
     with engine.connect() as connection:

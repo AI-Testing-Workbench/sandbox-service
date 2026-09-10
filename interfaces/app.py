@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import re
 import secrets
 from typing import Any
 
@@ -36,6 +37,9 @@ __all__ = [
 ]
 
 _DOC_PATHS = {"/docs", "/redoc", "/openapi.json"}
+_INTERNAL_REFERENCE_PATTERN = re.compile(
+    r"\s*(?:v4\s*§\s*[\w./~、-]+|变更\s*#\s*\d+)"
+)
 
 
 def create_app() -> FastAPI:
@@ -119,6 +123,7 @@ def create_app() -> FastAPI:
             for operation in path_item.values():
                 if isinstance(operation, dict):
                     operation.get("responses", {}).pop("422", None)
+        _remove_internal_references(schema)
         app.openapi_schema = schema
         return schema
 
@@ -149,3 +154,16 @@ def _app_error_content(exc: AppError) -> dict[str, str]:
     if isinstance(git_status, str):
         content["git_status"] = git_status
     return content
+
+
+def _remove_internal_references(value: object) -> None:
+    """移除公开 OpenAPI 文档中的内部规范章节和变更编号。"""
+    if isinstance(value, dict):
+        for key, item in list(value.items()):
+            if isinstance(item, str):
+                value[key] = _INTERNAL_REFERENCE_PATTERN.sub("", item)
+            else:
+                _remove_internal_references(item)
+    elif isinstance(value, list):
+        for item in value:
+            _remove_internal_references(item)

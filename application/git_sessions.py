@@ -3,7 +3,7 @@ Git 初始化内存会话（Git 凭证设计报告 §1.2、§2.3、§2.5）。
 
 - 创建阶段使用预生成的 `service_id`，OpenSandbox 成功后绑定真实 `container_id`。
 - 中间 Git 状态和非持久化凭证只保存在当前进程内存。
-- 资源解析先查活跃会话，再按 `container_id` 查询数据库；所有路径都校验用户绑定。
+- Git 操作只接受 `service_id`；真实 `container_id` 仅保存在创建会话内部用于落库绑定。
 - 结束会话时清除明文凭证并移除活跃映射；进程重启不会恢复内存会话。
 """
 
@@ -31,9 +31,6 @@ from domain.models import (
     coerce_git_final_status,
     coerce_git_status,
 )
-from infra.db import session_scope
-from infra.repositories import ContainerRepository
-
 from application.git_credentials import GitCredential, validate_credential
 
 __all__ = [
@@ -90,7 +87,9 @@ class GitSessionStore:
         self._lock = RLock()
         self._by_service_id: dict[str, GitInitializationSession] = {}
         self._by_container_id: dict[str, GitInitializationSession] = {}
-        self._ended_service_ids: set[str] = set()
+        self._ended_service_sessions: dict[
+            str, tuple[str, Optional[GitStatus]]
+        ] = {}
         self._ended_service_order: deque[str] = deque()
 
     def create_session(
@@ -106,7 +105,7 @@ class GitSessionStore:
             if (
                 resolved_service_id in self._by_service_id
                 or resolved_service_id in self._by_container_id
-                or resolved_service_id in self._ended_service_ids
+                or resolved_service_id in self._ended_service_sessions
             ):
                 raise BusinessConflictError("Git service_id 已被占用")
             session = GitInitializationSession(
@@ -137,15 +136,17 @@ class GitSessionStore:
             self._by_container_id[container_id] = session
             return session
 
-    def resolve_resource(self, resource_id: str, operator_user_id: str) -> GitResource:
-        """解析 `service_id` 或 `container_id` 并校验请求用户绑定。"""
-        resource_id = _require_id(resource_id, "resource_id")
+    def resolve_service_resource(
+        self,
+        service_id: str,
+        operator_user_id: str,
+    ) -> GitResource:
+        """只按 `service_id` 解析 Git 资源并校验请求用户绑定。"""
+        service_id = _require_id(service_id, "service_id")
         operator_user_id = _require_operator_user_id(operator_user_id)
 
         with self._lock:
-            session = self._by_service_id.get(resource_id)
-            if session is None:
-                session = self._by_container_id.get(resource_id)
+            session = self._by_service_id.get(service_id)
             if session is not None:
                 _ensure_user_match(session.service_user, operator_user_id)
                 return GitResource(
@@ -159,49 +160,19 @@ class GitSessionStore:
                     ),
                     session=session,
                 )
-            if resource_id in self._ended_service_ids:
-                raise GitSessionEndedError("Git 初始化会话已结束")
-
-        # service_id 不在内存时不能从数据库恢复；仅真实 container_id 可以走持久化记录。
-        with session_scope() as db_session:
-            row = ContainerRepository(db_session).get(resource_id)
-        if row is None or row.deleted_at is not None:
-            raise GitResourceNotFoundError("Git 资源不存在")
-        _ensure_user_match(row.user_id, operator_user_id)
-        return GitResource(
-            user_id=row.user_id,
-            service_id=None,
-            container_id=row.container_id,
-            git_fin_status=row.git_fin_status,
-        )
-
-    def get_or_create_container_session(
-        self,
-        resource_id: str,
-        operator_user_id: str,
-    ) -> GitInitializationSession:
-        """为运行中的真实容器创建按 `container_id` 定位的临时会话。"""
-        resource = self.resolve_resource(resource_id, operator_user_id)
-        if resource.session is not None:
-            return resource.session
-        if resource.container_id is None:
-            raise GitResourceNotFoundError("Git 资源未绑定 container_id")
-        if resource.git_fin_status != GitFinalStatus.INITIALIZED.value:
-            raise GitSessionEndedError("Git 初始化会话未完成，不能建立运行期会话")
-
-        with self._lock:
-            existing = self._by_container_id.get(resource.container_id)
-            if existing is not None:
-                _ensure_user_match(existing.service_user, operator_user_id)
-                return existing
-            session = GitInitializationSession(
-                service_id=None,
-                service_user=resource.user_id,
-                container_id=resource.container_id,
-                git_status=GitStatus.INITIALIZED,
-            )
-            self._by_container_id[resource.container_id] = session
-            return session
+            ended = self._ended_service_sessions.get(service_id)
+            if ended is not None:
+                ended_user, ended_status = ended
+                _ensure_user_match(ended_user, operator_user_id)
+                if ended_status is None:
+                    raise GitSessionEndedError("Git 初始化会话已结束")
+                return GitResource(
+                    user_id=ended_user,
+                    service_id=service_id,
+                    container_id=None,
+                    git_fin_status=ended_status.value,
+                )
+        raise GitResourceNotFoundError("Git service_id 不存在")
 
     def update_status(
         self,
@@ -214,7 +185,7 @@ class GitSessionStore:
             status = coerce_git_status(git_status)
         except ValueError as exc:
             raise InvalidArgumentError("Git 状态非法") from exc
-        resource = self.resolve_resource(resource_id, operator_user_id)
+        resource = self.resolve_service_resource(resource_id, operator_user_id)
         if resource.session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         with self._lock:
@@ -230,12 +201,10 @@ class GitSessionStore:
         credential: GitCredential,
     ) -> GitInitializationSession:
         """将非持久化凭证保存到当前资源的进程内存会话。"""
-        resource = self.resolve_resource(resource_id, operator_user_id)
-        session = (
-            resource.session
-            if resource.session is not None
-            else self.get_or_create_container_session(resource_id, operator_user_id)
-        )
+        resource = self.resolve_service_resource(resource_id, operator_user_id)
+        session = resource.session
+        if session is None:
+            raise GitSessionEndedError("Git 初始化会话已结束")
         validate_credential(session.service_user, credential)
         with self._lock:
             if session.ended:
@@ -254,12 +223,10 @@ class GitSessionStore:
         operator_user_id: str,
     ) -> GitInitializationSession:
         """标记持久化凭证已可领取；明文凭证仍不进入会话。"""
-        resource = self.resolve_resource(resource_id, operator_user_id)
-        session = (
-            resource.session
-            if resource.session is not None
-            else self.get_or_create_container_session(resource_id, operator_user_id)
-        )
+        resource = self.resolve_service_resource(resource_id, operator_user_id)
+        session = resource.session
+        if session is None:
+            raise GitSessionEndedError("Git 初始化会话已结束")
         with self._lock:
             if session.ended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
@@ -273,7 +240,7 @@ class GitSessionStore:
         operator_user_id: str,
     ) -> GitCredential:
         """原子领取并清除当前会话的临时明文凭证。"""
-        resource = self.resolve_resource(resource_id, operator_user_id)
+        resource = self.resolve_service_resource(resource_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitCredentialUnavailableError("当前资源没有临时凭证")
@@ -323,8 +290,6 @@ class GitSessionStore:
         with self._lock:
             session = self._by_service_id.get(resource_id)
             if session is None:
-                session = self._by_container_id.get(resource_id)
-            if session is None:
                 self._raise_missing_active_session(resource_id)
             if final_git_status is not None:
                 session.git_status = final_git_status
@@ -332,7 +297,11 @@ class GitSessionStore:
             session.ended = True
             if session.service_id is not None:
                 self._by_service_id.pop(session.service_id, None)
-                self._remember_ended_service_id(session.service_id)
+                self._remember_ended_service_session(
+                    session.service_id,
+                    session.service_user,
+                    final_git_status,
+                )
             if session.container_id is not None:
                 self._by_container_id.pop(session.container_id, None)
 
@@ -348,21 +317,26 @@ class GitSessionStore:
             self._by_service_id.pop(service_id, None)
             if session.container_id is not None:
                 self._by_container_id.pop(session.container_id, None)
-            self._remember_ended_service_id(service_id)
+            self._remember_ended_service_session(service_id, session.service_user, None)
 
-    def _remember_ended_service_id(self, service_id: str) -> None:
-        if service_id in self._ended_service_ids:
+    def _remember_ended_service_session(
+        self,
+        service_id: str,
+        service_user: str,
+        final_status: Optional[GitStatus],
+    ) -> None:
+        if service_id in self._ended_service_sessions:
             return
-        self._ended_service_ids.add(service_id)
+        self._ended_service_sessions[service_id] = (service_user, final_status)
         self._ended_service_order.append(service_id)
         while len(self._ended_service_order) > _ENDED_SERVICE_ID_LIMIT:
             expired = self._ended_service_order.popleft()
-            self._ended_service_ids.discard(expired)
+            self._ended_service_sessions.pop(expired, None)
 
     def _raise_missing_active_session(self, resource_id: str) -> NoReturn:
-        if resource_id in self._ended_service_ids:
+        if resource_id in self._ended_service_sessions:
             raise GitSessionEndedError("Git 初始化会话已结束")
-        raise GitResourceNotFoundError("Git 初始化会话不存在")
+        raise GitResourceNotFoundError("Git service_id 不存在")
 
 
 _git_session_store = GitSessionStore()

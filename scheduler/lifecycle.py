@@ -262,13 +262,20 @@ def refresh_status_cache() -> None:
             continue
         active_ids.add(row.container_id)
         if runtime is not None:
+            resolved_status = resolve_container_status(
+                current_git_fin_status,
+                runtime.status,
+            )
             runtime = replace(
                 runtime,
-                status=resolve_container_status(
-                    current_git_fin_status,
-                    runtime.status,
-                ),
+                status=resolved_status,
                 git_fin_status=get_public_git_fin_status(current_git_fin_status),
+                cpu_usage=runtime.cpu_usage if resolved_status is ContainerStatus.RUNNING else None,
+                memory_usage=(
+                    runtime.memory_usage
+                    if resolved_status is ContainerStatus.RUNNING
+                    else None
+                ),
             )
             updates[row.container_id] = runtime
             update_versions[row.container_id] = cache_version
