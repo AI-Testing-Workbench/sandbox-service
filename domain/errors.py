@@ -14,8 +14,13 @@ __all__ = [
     "UnauthorizedError",
     "DefaultImageNotConfiguredError",
     "ContainerNotFoundError",
+    "GitResourceNotFoundError",
+    "GitResourceUserMismatchError",
     "UserNotFoundError",
     "BusinessConflictError",
+    "GitSessionEndedError",
+    "GitCredentialUnavailableError",
+    "GitCredentialAlreadyClaimedError",
     "LimitReachedError",
     "ExternalDependencyError",
 ]
@@ -71,6 +76,18 @@ class ContainerNotFoundError(AppError):
     code = "container_not_found"
 
 
+class GitResourceNotFoundError(ContainerNotFoundError):
+    """Git API 资源 ID 不存在（HTTP 404）。"""
+
+    code = "git_resource_not_found"
+
+
+class GitResourceUserMismatchError(UnauthorizedError):
+    """Git API 请求用户与资源绑定用户不匹配（HTTP 401）。"""
+
+    code = "git_resource_user_mismatch"
+
+
 class UserNotFoundError(AppError):
     """用户清单中不存在指定用户（HTTP 404）。"""
 
@@ -83,6 +100,24 @@ class BusinessConflictError(AppError):
 
     http_status = 409
     code = "conflict"
+
+
+class GitSessionEndedError(BusinessConflictError):
+    """Git 初始化会话已进入终态并清理（HTTP 409）。"""
+
+    code = "git_session_ended"
+
+
+class GitCredentialUnavailableError(BusinessConflictError):
+    """当前 Git 会话暂无可领取的临时凭证（HTTP 409）。"""
+
+    code = "git_credential_unavailable"
+
+
+class GitCredentialAlreadyClaimedError(BusinessConflictError):
+    """当前临时凭证已经被领取并清理（HTTP 409）。"""
+
+    code = "git_credential_already_claimed"
 
 
 class LimitReachedError(BusinessConflictError):
