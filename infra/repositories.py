@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import ColumnElement, func, select
+from sqlalchemy import ColumnElement, func, select, update
 from sqlalchemy.orm import Session
 
 from infra.orm import (
@@ -138,13 +138,26 @@ class ContainerRepository:
         if container is not None:
             container.expiration_hours = expiration_hours
 
-    def update_git_fin_status(self, container_id: str, git_fin_status: str) -> bool:
-        """更新 Git 初始化最终状态；不存在时返回 False，暂不提交事务。"""
+    def set_git_fin_status_if_unset(
+        self,
+        container_id: str,
+        git_fin_status: str,
+    ) -> tuple[bool, Optional[str]]:
+        """仅在当前没有最终状态时写入，并返回 `(是否写入, 既有状态)`。"""
+        result = self._session.execute(
+            update(Container)
+            .where(
+                Container.container_id == container_id,
+                Container.git_fin_status.is_(None),
+            )
+            .values(git_fin_status=git_fin_status)
+        )
+        if getattr(result, "rowcount", 0) == 1:
+            return True, None
         container = self.get(container_id)
         if container is None:
-            return False
-        container.git_fin_status = git_fin_status
-        return True
+            return False, None
+        return False, container.git_fin_status
 
 
 class SettingsRepository:

@@ -29,6 +29,7 @@ from domain.errors import (
 )
 from domain.models import (
     GIT_INTERMEDIATE_STATUSES,
+    GitFinalStatus,
     GitStatus,
     coerce_git_final_status,
     coerce_git_status,
@@ -91,6 +92,12 @@ def report_git_status(
     except ValueError as exc:
         raise InvalidArgumentError("Git 最终状态非法") from exc
     if resource.git_fin_status is not None:
+        if (
+            final_status is GitFinalStatus.INITIALIZED
+            and resource.git_fin_status == GitFinalStatus.INITIALIZED.value
+        ):
+            _finish_git_session(store, service_id, final_status)
+            return GitStatus(final_status.value)
         raise BusinessConflictError("Git 初始化已经有最终状态")
     if resource.container_id is None:
         raise GitSessionEndedError("Git 初始化会话已结束")
@@ -99,23 +106,30 @@ def report_git_status(
 
     try:
         with session_scope() as db_session:
-            updated = ContainerRepository(db_session).update_git_fin_status(
+            updated, existing_status = ContainerRepository(db_session).set_git_fin_status_if_unset(
                 resource.container_id,
                 final_status.value,
             )
             if not updated:
-                raise GitResourceNotFoundError("容器记录不存在")
+                if existing_status is None:
+                    raise GitResourceNotFoundError("容器记录不存在")
+                if (
+                    final_status is GitFinalStatus.INITIALIZED
+                    and existing_status == GitFinalStatus.INITIALIZED.value
+                ):
+                    idempotent = True
+                else:
+                    raise BusinessConflictError("Git 初始化已经有最终状态")
+            else:
+                idempotent = False
     except (BusinessConflictError, GitResourceNotFoundError):
         raise
     except Exception as exc:  # noqa: BLE001
         logger.error("Git 最终状态写入失败: %s", type(exc).__name__)
         raise ExternalDependencyError("保存 Git 初始化结果失败") from exc
 
-    try:
-        store.end_session(service_id, final_status=final_status)
-    except (GitSessionEndedError, GitResourceNotFoundError):
-        # 会话可能已被异常清理；数据库最终状态已经成功写入。
-        pass
+    if idempotent or updated:
+        _finish_git_session(store, service_id, final_status)
     return GitStatus(final_status.value)
 
 
@@ -188,6 +202,18 @@ def _final_status(value: Optional[str]) -> GitStatus:
         return GitStatus(value)
     except ValueError as exc:
         raise ExternalDependencyError("Git 最终状态数据无效") from exc
+
+
+def _finish_git_session(
+    store,
+    service_id: str,
+    final_status: GitFinalStatus,
+) -> None:
+    """最终结果已落库后清理会话；重复上报时清理保持幂等。"""
+    try:
+        store.end_session(service_id, final_status=final_status)
+    except (GitSessionEndedError, GitResourceNotFoundError):
+        pass
 
 
 def _require_operator_user_id(value: Optional[str]) -> str:
