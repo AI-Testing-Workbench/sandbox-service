@@ -185,6 +185,15 @@ def submit_git_credential(
     operator_user_id = _require_operator_user_id(operator_user_id)
     store = get_git_session_store()
     resource = store.resolve_service_resource(service_id, operator_user_id)
+    if resource.git_fin_status == GitFinalStatus.INITIALIZED.value:
+        if not persist:
+            raise BusinessConflictError("初始化完成后不允许提交非持久化凭证")
+        if not credential.git_password.strip():
+            return
+        save_credential(resource.user_id, credential, persist=True)
+        return
+    if resource.git_fin_status is not None:
+        raise BusinessConflictError("Git 初始化已经有最终状态")
     if not credential.git_password.strip():
         report_git_status(service_id, operator_user_id, GitStatus.FAILED_USER_CANCELLED)
         return
