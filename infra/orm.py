@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 __all__ = [
@@ -41,6 +41,7 @@ class Container(Base):
             "'failed_container', 'failed_initialize', 'failed_user_cancelled')",
             name="ck_containers_git_fin_status",
         ),
+        Index("ux_containers_service_id", "service_id", unique=True),
     )
 
     container_id: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -52,16 +53,18 @@ class Container(Base):
     )
 
     user_id: Mapped[str] = mapped_column(String(128))
+    service_id: Mapped[str] = mapped_column(Text, nullable=False)
+
     gitee_user: Mapped[str] = mapped_column(String(128))
     gitee_repository: Mapped[str] = mapped_column(String(128))
     gitee_branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     gitee_url: Mapped[str] = mapped_column(String(512), default="")
     authorize_general_account: Mapped[bool] = mapped_column(Boolean)
+    git_fin_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[str] = mapped_column(String(32))
     expiration_hours: Mapped[int] = mapped_column(Integer)
     deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    git_fin_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
 
 class GitCredentialRow(Base):

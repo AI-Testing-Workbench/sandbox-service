@@ -427,6 +427,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 ContainerRepository(session).add(
                     ContainerRow(
                         container_id=container_id,
+                        service_id=service_id,
                         user_id=params.user_id,
                         container_type=container_type_value,
                         gitee_url=gitee_url,

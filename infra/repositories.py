@@ -51,6 +51,12 @@ class ContainerRepository:
     def get(self, container_id: str) -> Optional[Container]:
         return self._session.get(Container, container_id)
 
+    def get_by_service_id(self, service_id: str) -> Optional[Container]:
+        """按持久化 Git service_id 查询容器记录。"""
+        return self._session.scalar(
+            select(Container).where(Container.service_id == service_id)
+        )
+
     def exists(self, container_id: str) -> bool:
         return self.get(container_id) is not None
 

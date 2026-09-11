@@ -31,6 +31,8 @@ from domain.models import (
     coerce_git_final_status,
     coerce_git_status,
 )
+from infra.db import session_scope
+from infra.repositories import ContainerRepository
 from application.git_credentials import GitCredential, validate_credential
 
 __all__ = [
@@ -166,13 +168,20 @@ class GitSessionStore:
                 _ensure_user_match(ended_user, operator_user_id)
                 if ended_status is None:
                     raise GitSessionEndedError("Git 初始化会话已结束")
-                return GitResource(
-                    user_id=ended_user,
-                    service_id=service_id,
-                    container_id=None,
-                    git_fin_status=ended_status.value,
-                )
-        raise GitResourceNotFoundError("Git service_id 不存在")
+        # 初始化会话清理或服务重启后，从持久化容器记录恢复最终 service_id。
+        with session_scope() as db_session:
+            row = ContainerRepository(db_session).get_by_service_id(service_id)
+        if row is None or row.deleted_at is not None:
+            raise GitResourceNotFoundError("Git service_id 不存在")
+        _ensure_user_match(row.user_id, operator_user_id)
+        if row.git_fin_status is None:
+            raise GitSessionEndedError("Git 初始化会话无法恢复")
+        return GitResource(
+            user_id=row.user_id,
+            service_id=service_id,
+            container_id=row.container_id,
+            git_fin_status=row.git_fin_status,
+        )
 
     def update_status(
         self,
