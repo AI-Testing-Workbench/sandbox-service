@@ -258,7 +258,7 @@ class GitSessionStore:
                 raise GitSessionEndedError("Git 初始化会话已结束")
             if not session.credential_available:
                 if session.credential_claimed:
-                    raise GitCredentialAlreadyClaimedError("临时 Git 凭证已经领取")
+                    raise GitCredentialAlreadyClaimedError(session.git_status.value)
                 raise GitCredentialUnavailableError("当前没有可领取的 Git 凭证")
             temporary_type = session.temporary_type
             temporary_git_username = session.temporary_git_username

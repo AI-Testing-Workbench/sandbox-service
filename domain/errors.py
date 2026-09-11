@@ -120,6 +120,10 @@ class GitCredentialAlreadyClaimedError(BusinessConflictError):
 
     code = "git_credential_already_claimed"
 
+    def __init__(self, git_status: str) -> None:
+        self.git_status = git_status
+        super().__init__("临时 Git 凭证已经领取")
+
 
 class GitCredentialConflictError(BusinessConflictError):
     """凭证领取暂不可用，响应需携带当前 Git 详细状态（HTTP 409）。"""

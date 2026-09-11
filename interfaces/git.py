@@ -74,6 +74,8 @@ class GitCredentialConflictResponse(BaseModel):
     """凭证尚未可用或流程已失败时的 409 响应"""
 
     git_status: GitStatus = Field(description="当前 Git 详细状态")
+    code: str = Field(description="错误码")
+    message: str = Field(description="错误信息")
 
 
 OperatorUserId = Annotated[str | None, Depends(get_operator_user_id)]

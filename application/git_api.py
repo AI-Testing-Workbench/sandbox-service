@@ -15,7 +15,11 @@ from application.git_credentials import (
     get_persisted_credential,
     save_credential,
 )
-from application.git_sessions import GitInitializationSession, get_git_session_store
+from application.git_sessions import (
+    GitInitializationSession,
+    GitResource,
+    get_git_session_store,
+)
 from domain.errors import (
     BusinessConflictError,
     ExternalDependencyError,
@@ -140,7 +144,10 @@ def get_git_credential(
     """领取临时或用户级凭证；无可用凭证时抛出携带状态的 409。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     store = get_git_session_store()
-    resource = store.resolve_service_resource(service_id, operator_user_id)
+    try:
+        resource = store.resolve_service_resource(service_id, operator_user_id)
+    except GitSessionEndedError as exc:
+        raise GitCredentialConflictError(GitStatus.FAILED_SERVICE.value) from exc
     if resource.git_fin_status is not None and resource.git_fin_status.startswith("failed_"):
         raise GitCredentialConflictError(resource.git_fin_status)
     if resource.session is not None:
@@ -148,6 +155,10 @@ def get_git_credential(
             return store.claim_temporary_credential(service_id, operator_user_id)
         except GitCredentialAlreadyClaimedError:
             raise
+        except GitSessionEndedError as exc:
+            raise GitCredentialConflictError(
+                _credential_conflict_status(resource).value
+            ) from exc
         except GitCredentialUnavailableError:
             pass
 
@@ -202,6 +213,12 @@ def _final_status(value: Optional[str]) -> GitStatus:
         return GitStatus(value)
     except ValueError as exc:
         raise ExternalDependencyError("Git 最终状态数据无效") from exc
+
+
+def _credential_conflict_status(resource: GitResource) -> GitStatus:
+    if resource.session is not None:
+        return resource.session.git_status
+    return _final_status(resource.git_fin_status)
 
 
 def _finish_git_session(
