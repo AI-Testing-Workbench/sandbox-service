@@ -44,7 +44,7 @@ def validate_credential(user_id: str, credential: GitCredential) -> None:
     if credential.type != "password":
         raise InvalidArgumentError("Git 凭证 type 目前只支持 password")
     _require_text(credential.git_username, "git_username")
-    _require_text(credential.git_email, "git_email")
+    _allow_empty_text(credential.git_email, "git_email")
     _require_text(credential.git_password, "git_password")
 
 
@@ -109,3 +109,9 @@ def get_persisted_credential(user_id: str) -> GitCredential | None:
 def _require_text(value: str, field_name: str) -> None:
     if not isinstance(value, str) or not value.strip():
         raise InvalidArgumentError(f"{field_name} 不能为空")
+
+
+def _allow_empty_text(value: str, field_name: str) -> None:
+    """允许空字符串，但拒绝非空的纯空白值。"""
+    if not isinstance(value, str) or (value and not value.strip()):
+        raise InvalidArgumentError(f"{field_name} 必须是字符串且不能只包含空白")

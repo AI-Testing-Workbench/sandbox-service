@@ -56,7 +56,7 @@ class GitCredentialSubmitRequest(BaseModel):
 
     type: Literal["password"] = Field(description="凭证类型")
     git_username: str = Field(min_length=1, description="Git 用户名")
-    git_email: str = Field(min_length=1, description="Git 邮箱")
+    git_email: str = Field(description="Git 邮箱 (可选)")
     git_password: str = Field(description="Git 密码；空值由业务层解释为取消")
     persist: bool = Field(description="是否写入数据库")
 
