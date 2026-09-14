@@ -45,6 +45,7 @@ class Container(Base):
     )
 
     container_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    service_id: Mapped[str] = mapped_column(Text, nullable=False)
     image: Mapped[str] = mapped_column(String(512))
     container_type: Mapped[str] = mapped_column(
         String(32),
@@ -53,8 +54,6 @@ class Container(Base):
     )
 
     user_id: Mapped[str] = mapped_column(String(128))
-    service_id: Mapped[str] = mapped_column(Text, nullable=False)
-
     gitee_user: Mapped[str] = mapped_column(String(128))
     gitee_repository: Mapped[str] = mapped_column(String(128))
     gitee_branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
