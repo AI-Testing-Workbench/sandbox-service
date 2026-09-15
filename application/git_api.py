@@ -166,12 +166,14 @@ def get_git_credential(
     if credential is not None:
         return credential
 
-    status = (
-        resource.session.git_status
+    status_value: str = str(
+        resource.session.git_status.value
         if resource.session is not None
-        else _final_status(resource.git_fin_status)
+        else _final_status(resource.git_fin_status).value
     )
-    raise GitCredentialConflictError(status.value)
+    if status_value in ("starting", "processing"):
+        status_value = "credential_required"
+    raise GitCredentialConflictError(status_value)
 
 
 def submit_git_credential(
