@@ -21,6 +21,7 @@ from interfaces.admin.schemas import (
     ExpirationResponse,
     OrphanContainerDeleteRequest,
     OrphanContainerListResponse,
+    PodDeleteRequest,
 )
 from interfaces.common_container_routes import register_container_action_routes
 from interfaces.common import ErrorResponse, api_responses
@@ -135,6 +136,19 @@ def list_orphan_containers() -> OrphanContainerListResponse:
 def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
     """批量删除指定的孤儿容器。"""
     container_service.delete_orphan_containers(request.container_ids)
+    return Response(status_code=204)
+
+
+# 按 K8s Pod 名称删除：Pod 名称会被解析回 OpenSandbox 沙盒 ID，再删除 BatchSandbox，
+# 因而不会像直接 `kubectl delete pod` 那样被控制器重建。
+@router.post(
+    "/k8s/pods/delete",
+    status_code=204,
+    responses=api_responses("成功 (无内容)", 204, 400, 502),
+)
+def delete_k8s_pods(request: PodDeleteRequest) -> Response:
+    """按 kubectl 查询到的 Pod 名称物理删除指定沙盒容器。"""
+    container_service.delete_sandboxes_by_pod_names(request.pod_names)
     return Response(status_code=204)
 
 
