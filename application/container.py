@@ -93,6 +93,7 @@ __all__ = [
     "query_container_ids",
     "list_orphan_container_ids",
     "delete_orphan_containers",
+    "delete_sandboxes_by_pod_names",
     "list_admin_containers",
     "get_admin_container",
     "get_container_limit",
@@ -932,6 +933,58 @@ def delete_orphan_containers(container_ids: list[str]) -> None:
         )
 
 
+def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:
+    """按 K8s Pod 名称物理删除沙盒（仅管理 API）。
+
+    直接 `kubectl delete pod` 会被 BatchSandbox 控制器重建（表现为「自动重启」）。
+    本接口把 Pod 名称解析回 OpenSandbox 沙盒 ID 后调用管理面删除，连带删除
+    BatchSandbox CR，Pod 不会被重建。已不存在的沙盒按幂等成功处理，并清理同 ID
+    的本地数据库记录。
+    """
+    requested_names = _normalise_pod_names(pod_names)
+    client = get_opensandbox_client()
+    known_ids = _list_managed_container_ids(client)
+    invalid_names: list[str] = []
+    failed_names: list[str] = []
+    processed_ids: set[str] = set()
+
+    for pod_name in requested_names:
+        container_id = _resolve_container_id_from_pod_name(pod_name, known_ids)
+        if container_id is None:
+            invalid_names.append(pod_name)
+            continue
+        if container_id in processed_ids:
+            continue
+        processed_ids.add(container_id)
+        try:
+            client.delete(container_id)
+        except SandboxNotFoundError:
+            # 目标在解析和删除之间消失时，最终状态已经满足。
+            pass
+        except Exception as exc:  # noqa: BLE001
+            failed_names.append(pod_name)
+            logger.error(
+                "按 Pod 名称删除容器失败: %s (%s): %s: %s",
+                pod_name,
+                container_id,
+                type(exc).__name__,
+                exc,
+            )
+            continue
+        with lifecycle_guard():
+            with session_scope() as session:
+                ContainerRepository(session).delete(container_id)
+
+    if invalid_names:
+        raise InvalidArgumentError(
+            f"以下 Pod 名称无法解析为沙盒 ID: {', '.join(invalid_names)}"
+        )
+    if failed_names:
+        raise ExternalDependencyError(
+            f"以下 Pod 删除失败: {', '.join(failed_names)}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 管理端容器完整查询与数量限制
 # ---------------------------------------------------------------------------
@@ -1028,6 +1081,78 @@ def _require_active_record(container_id: str) -> ContainerRow:
     if row is None or row.deleted_at is not None:
         raise ContainerNotFoundError("容器不存在")
     return row
+
+
+def _normalise_pod_names(pod_names: list[str]) -> list[str]:
+    """校验并去重 K8s Pod 名称，保留请求顺序。"""
+    if not isinstance(pod_names, list) or not pod_names:
+        raise InvalidArgumentError("pod_names 不能为空")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for pod_name in pod_names:
+        if not isinstance(pod_name, str) or not pod_name.strip():
+            raise InvalidArgumentError("pod_name 不能为空")
+        normalized = pod_name.strip()
+        if normalized not in seen:
+            result.append(normalized)
+            seen.add(normalized)
+    return result
+
+
+def _list_managed_container_ids(client: OpenSandboxClient) -> set[str]:
+    """尽力获取带本服务来源标记的沙盒 ID；失败时返回空集合（仍可用 UUID 解析）。"""
+    try:
+        return set(
+            client.list_container_ids(
+                metadata={_SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE}
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug(
+            "按 Pod 名称删除时查询沙盒列表失败（改用名称解析）: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return set()
+
+
+def _resolve_container_id_from_pod_name(
+    pod_name: str,
+    known_ids: set[str],
+) -> Optional[str]:
+    """将 K8s Pod 名称解析为 OpenSandbox 沙盒 ID。
+
+    OpenSandbox 用随机 UUID4 作为沙盒 ID，其 BatchSandbox CR 与 Pod 名称前缀一致，
+    Pod 名称形如 `<sandbox-id>-<随机后缀>`（多副本时可能还有索引段）。解析顺序：
+    1. Pod 名称本身即沙盒 ID（已记录或本身为合法 UUID）；
+    2. 与已知沙盒 ID 前缀匹配；
+    3. 逐段去掉尾部生成后缀直到得到合法 UUID。
+    """
+    if pod_name in known_ids:
+        return pod_name
+    for known_id in known_ids:
+        if pod_name.startswith(f"{known_id}-"):
+            return known_id
+
+    candidate = pod_name
+    while candidate:
+        if _is_uuid(candidate):
+            return candidate
+        head, separator, _ = candidate.rpartition("-")
+        if not separator:
+            return None
+        candidate = head
+    return None
+
+
+def _is_uuid(value: str) -> bool:
+    """判断字符串是否为合法 UUID（OpenSandbox 沙盒 ID 形态）。"""
+    try:
+        uuid.UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 def _normalise_orphan_container_ids(container_ids: list[str]) -> list[str]:

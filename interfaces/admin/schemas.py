@@ -35,6 +35,7 @@ __all__ = [
     "AdminContainerListResponse",
     "OrphanContainerListResponse",
     "OrphanContainerDeleteRequest",
+    "PodDeleteRequest",
     "AdminStateResponse",
     "ExpirationRequest",
     "ExpirationResponse",
@@ -218,6 +219,24 @@ class OrphanContainerDeleteRequest(BaseModel):
     container_ids: list[str] = Field(
         min_length=1,
         description="容器 ID 列表",
+    )
+
+
+class PodDeleteRequest(BaseModel):
+    """按 K8s Pod 名称物理删除沙盒请求"""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {"pod_names": ["3f2a9c1b-5d4e-4a6f-8b1c-2e7d9a0f4b3c-abcde"]}
+            ]
+        },
+    )
+
+    pod_names: list[str] = Field(
+        min_length=1,
+        description="kubectl get pod -n <命名空间> 查出的 Pod 名称列表",
     )
 
 
