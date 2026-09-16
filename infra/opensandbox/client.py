@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 from httpx import Client as HttpxClient
 from opensandbox.config.connection_sync import ConnectionConfigSync
-from opensandbox.models.sandboxes import PVC as SdkPVC
+from opensandbox.models.sandboxes import PVC
 from opensandbox.models.sandboxes import SandboxFilter
 from opensandbox.models.sandboxes import Volume as SdkVolume
 from opensandbox.sync.manager import SandboxManagerSync
@@ -80,7 +80,7 @@ def _to_sdk_volume(volume: SandboxVolume) -> SdkVolume:
     """将服务内部挂载描述转换为 SDK 的预存在 PVC Volume。"""
     return SdkVolume(
         name=volume.name,
-        pvc=SdkPVC(
+        pvc=PVC(
             claimName=volume.claim_name,
             createIfNotExists=False,
             deleteOnSandboxTermination=False,
@@ -305,7 +305,8 @@ class OpenSandboxClient:
                 response.status_code,
             )
             raise OpenSandboxError("获取容器日志失败")
-        return response.text
+        # 日志接口偶尔不带可靠的 charset；统一按 UTF-8 解码，保证上层拿到文本。
+        return response.content.decode("utf-8", errors="replace")
 
     def _get_metrics_raw(self, container_id: str) -> object:
         """通过直连 execd 端点获取 metrics；仅修正服务容器不可达的 loopback 主机。"""
