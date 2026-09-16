@@ -212,7 +212,9 @@ def _filebrowser_urls(raw_value: Optional[str]) -> tuple[Optional[str], Optional
         )
 
     # Keep the configured base address for the status API, while the client
-    # receives a canonical URL ending in exactly one /api segment.
+    # receives a canonical URL ending in exactly one /api segment. A loopback
+    # address points at the sandbox container itself, so use Docker Desktop's
+    # host gateway for requests made from the container.
     scheme = cast(str, parsed.scheme).lower()
     netloc = cast(str, parsed.netloc)
     path = cast(str, parsed.path)
@@ -220,7 +222,12 @@ def _filebrowser_urls(raw_value: Optional[str]) -> tuple[Optional[str], Optional
     api_path = base_path if base_path == "/api" or base_path.endswith("/api") else (
         f"{base_path}/api" if base_path else "/api"
     )
-    api_url = urlunsplit((scheme, netloc, api_path, "", ""))
+    client_netloc = netloc
+    if hostname in ("127.0.0.1", "localhost", "::1"):
+        client_netloc = "host.docker.internal"
+        if parsed.port is not None:
+            client_netloc += f":{parsed.port}"
+    api_url = urlunsplit((scheme, client_netloc, api_path, "", ""))
     return value, api_url
 
 
