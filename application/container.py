@@ -824,7 +824,10 @@ def get_container_logs(container_id: str) -> str:
         ensure_user_not_blacklisted(row.user_id)
 
     try:
-        return get_opensandbox_client().get_logs(container_id)
+        logs: str | bytes = get_opensandbox_client().get_logs(container_id)
+        if isinstance(logs, bytes):
+            return logs.decode("utf-8", errors="replace")
+        return logs
     except SandboxNotFoundError as exc:
         raise ContainerNotFoundError("后端容器不存在") from exc
     except Exception as exc:
