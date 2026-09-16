@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import logging
 import math
-import os
 import threading
 import uuid
 from contextlib import contextmanager
@@ -130,15 +129,6 @@ _SOURCE_METADATA_VALUE = "true"
 _CONTAINER_TYPE_METADATA_KEY = "container-type"
 #: 镜像内 noVNC/websockify 监听端口（tscode-server 镜像内固定 6080）
 _NOVNC_PORT = 6080
-
-
-# noinspection HttpUrlsUsage
-def _service_url() -> str:
-    """返回容器内启动脚本访问沙盒服务的 HTTP 基础地址。"""
-    configured = os.environ.get("TA_SS_SERVICE_URL", "").strip()
-    if configured:
-        return configured.rstrip("/")
-    return f"http://host.docker.internal:{settings.rest_api_port}"
 
 
 # noinspection HttpUrlsUsage
@@ -478,7 +468,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             "TESTAGENT_CLOUD_MODE": "1",  # 标记容器为云端
             "TESTAGENT_CLOUD_SERVICE_USER": params.user_id,
             "TESTAGENT_CLOUD_SERVICE_ID": service_id,
-            "TESTAGENT_CLOUD_SERVICE_URL": _service_url(),
+            "TESTAGENT_CLOUD_SERVICE_URL": settings.service_url,
             "TESTAGENT_CLOUD_GITEE_USER": gitee_user,
             "TESTAGENT_CLOUD_GITEE_REPOSITORY": gitee_repository,
             "TESTAGENT_CLOUD_GITEE_BRANCH": params.gitee_branch or "",

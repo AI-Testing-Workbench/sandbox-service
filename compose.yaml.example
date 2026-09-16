@@ -43,6 +43,8 @@ services:
       # PVC 名称
       TA_SS_PVC_NAME:
 
+      # REST API 地址，包含端口
+      TA_SS_SERVICE_URL: http://host.docker.internal:8080
       # REST API 监听端口
       TA_SS_REST_API_PORT: 8080
       # REST API 文档鉴权使用的用户名和密码

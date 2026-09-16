@@ -97,6 +97,8 @@ class Settings:
     scheduler_poll_interval_seconds: int
     #: REST API 监听端口（监听地址固定 0.0.0.0）
     rest_api_port: int
+    #: 容器访问本服务 REST API 的最终地址（必填，不额外处理端口）
+    service_url: str
     #: REST 文档 Basic 鉴权用户名
     rest_api_username: str
     #: REST 文档 Basic 鉴权密码
@@ -365,6 +367,7 @@ settings: Settings = Settings(
     rest_api_password=_string("REST_API_PASSWORD"),
     scheduler_poll_interval_seconds=_int("SCHEDULER_POLL_INTERVAL_SECONDS", 5, minimum=1),
     rest_api_port=_int("REST_API_PORT", 8080, minimum=1, maximum=65535),
+    service_url=_string("SERVICE_URL"),
     log_level=_log_level,
     container_pip_index_url=_optional_url("PROXY_PIP_INDEX_URL"),
     container_npm_registry=_optional_url("PROXY_NPM_REGISTRY"),
