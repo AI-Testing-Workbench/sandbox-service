@@ -2,7 +2,7 @@ version: "2.2"
 
 services:
   testagent-cloud-sandbox-service:
-    image: testagent/testagent-cloud-sandbox-service:latest
+    image: sandbox-service:latest
 
     environment:
       # OpenSandbox 服务地址
