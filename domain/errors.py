@@ -12,12 +12,14 @@ __all__ = [
     "AppError",
     "InvalidArgumentError",
     "UnauthorizedError",
+    "UserBlacklistedError",
     "DefaultImageNotConfiguredError",
     "ContainerNotFoundError",
     "GitResourceNotFoundError",
     "GitResourceUserMismatchError",
     "UserNotFoundError",
     "BusinessConflictError",
+    "VolumePathConflictError",
     "GitSessionEndedError",
     "GitCredentialUnavailableError",
     "GitCredentialAlreadyClaimedError",
@@ -64,6 +66,16 @@ class UnauthorizedError(AppError):
     code = "unauthorized"
 
 
+class UserBlacklistedError(AppError):
+    """用户命中服务内置黑名单（HTTP 403）。"""
+
+    http_status = 403
+    code = "user_blacklisted"
+
+    def __init__(self, message: str = "用户被禁止") -> None:
+        super().__init__(message)
+
+
 class DefaultImageNotConfiguredError(InvalidArgumentError):
     """未配置默认镜像（HTTP 400，v4 §10.5 / §14.4）。"""
 
@@ -101,6 +113,12 @@ class BusinessConflictError(AppError):
 
     http_status = 409
     code = "conflict"
+
+
+class VolumePathConflictError(BusinessConflictError):
+    """FileBrowser service 或挂载目录已存在且不能复用（HTTP 409）。"""
+
+    code = "volume_path_conflict"
 
 
 class GitSessionEndedError(BusinessConflictError):

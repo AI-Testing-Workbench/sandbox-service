@@ -14,13 +14,15 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
-from typing import Optional, TypeVar
+from typing import Any, Optional, TypeVar
 from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from httpx import Client as HttpxClient
 from opensandbox.config.connection_sync import ConnectionConfigSync
+from opensandbox.models.sandboxes import PVC as SdkPVC
 from opensandbox.models.sandboxes import SandboxFilter
+from opensandbox.models.sandboxes import Volume as SdkVolume
 from opensandbox.sync.manager import SandboxManagerSync
 from opensandbox.sync.sandbox import SandboxSync
 
@@ -30,6 +32,7 @@ from infra.opensandbox.types import (
     SandboxEndpoint,
     SandboxMetrics,
     SandboxStatus,
+    SandboxVolume,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +76,21 @@ _STOP_IDEMPOTENT_STATES = frozenset({
 _T = TypeVar("_T")
 
 
+def _to_sdk_volume(volume: SandboxVolume) -> SdkVolume:
+    """将服务内部挂载描述转换为 SDK 的预存在 PVC Volume。"""
+    return SdkVolume(
+        name=volume.name,
+        pvc=SdkPVC(
+            claimName=volume.claim_name,
+            createIfNotExists=False,
+            deleteOnSandboxTermination=False,
+        ),
+        mountPath=volume.mount_path,
+        readOnly=volume.read_only,
+        subPath=volume.sub_path,
+    )
+
+
 class OpenSandboxError(Exception):
     """OpenSandbox 调用失败时抛出的对外摘要错误（底层细节已写日志）。"""
 
@@ -108,6 +126,7 @@ class OpenSandboxClient:
         metadata: Optional[dict[str, str]] = None,
         skip_health_check: bool = True,
         resource_limits: Optional[dict[str, str]] = None,
+        volumes: Optional[list[SandboxVolume]] = None,
     ) -> CreatedSandbox:
         """创建并自动启动容器（v4 §11.1）；`timeout=None` 表示生命周期由本服务管理。
 
@@ -119,15 +138,14 @@ class OpenSandboxClient:
         if metadata:
             payload.update(metadata)
         try:
-            sandbox = SandboxSync.create(
-                image,
-                env=env,
-                metadata=payload,
-                resource={**_DEFAULT_RESOURCE_LIMITS, **(resource_limits or {})},
-                timeout=None,
-                connection_config=self._config,
-                skip_health_check=skip_health_check,
-                entrypoint=[
+            create_kwargs: dict[str, Any] = {
+                "env": env,
+                "metadata": payload,
+                "resource": {**_DEFAULT_RESOURCE_LIMITS, **(resource_limits or {})},
+                "timeout": None,
+                "connection_config": self._config,
+                "skip_health_check": skip_health_check,
+                "entrypoint": [
                     "/bin/sh",
                     "-c",
                     (
@@ -138,7 +156,10 @@ class OpenSandboxClient:
                         "fi"
                     ),
                 ],
-            )
+            }
+            if volumes:
+                create_kwargs["volumes"] = [_to_sdk_volume(volume) for volume in volumes]
+            sandbox = SandboxSync.create(image, **create_kwargs)
             container_id = sandbox.id
             sandbox.close()
             return CreatedSandbox(container_id=container_id)

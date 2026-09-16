@@ -16,7 +16,7 @@ from application import git_api as git_service
 from application.git_credentials import GitCredential
 from domain.models import GitStatus
 from interfaces.auth import get_operator_user_id
-from interfaces.common import api_responses
+from interfaces.common import ErrorResponse, api_responses
 
 __all__ = [
     "GitStateResponse",
@@ -80,7 +80,11 @@ class GitCredentialConflictResponse(BaseModel):
 
 OperatorUserId = Annotated[str | None, Depends(get_operator_user_id)]
 
-router = APIRouter(prefix="/git", tags=["Git 凭证 API"])
+router = APIRouter(
+    prefix="/git",
+    tags=["Git 凭证 API"],
+    responses={403: {"model": ErrorResponse, "description": "用户被禁止"}},
+)
 
 
 @router.get(

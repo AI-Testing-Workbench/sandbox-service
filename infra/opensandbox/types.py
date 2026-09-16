@@ -16,6 +16,7 @@ __all__ = [
     "SandboxEndpoint",
     "SandboxMetrics",
     "CreatedSandbox",
+    "SandboxVolume",
 ]
 
 
@@ -53,3 +54,14 @@ class CreatedSandbox:
     """创建容器返回结果（v4 §11.1）。"""
 
     container_id: str
+
+
+@dataclass(frozen=True)
+class SandboxVolume:
+    """应用层传入的 PVC 挂载描述，由 OpenSandbox 客户端转换为 SDK Volume。"""
+
+    name: str
+    mount_path: str
+    claim_name: str
+    sub_path: Optional[str] = None
+    read_only: bool = False

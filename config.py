@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 import os
 from contextlib import contextmanager
@@ -20,9 +21,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Iterator, Literal, Optional, cast
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from domain.models import ContainerType
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "ConfigError",
@@ -108,6 +111,22 @@ class Settings:
     container_default_cpu: float = 1.0
     #: 容器默认内存大小，单位 Gi；可由管理端 limit 配置覆盖
     container_default_memory: int = 1
+    #: FileBrowser 配置的基础地址；未配置时为 None
+    filebrowser_url: Optional[str] = None
+    #: FileBrowser 资源 API 地址；由基础地址规范化追加 /api
+    filebrowser_api_url: Optional[str] = None
+    #: FileBrowser 用户生成的 API Token；未配置时为 None
+    filebrowser_api_key: Optional[str] = None
+    #: FileBrowser 登录用户名；未配置时为 None
+    filebrowser_username: Optional[str] = None
+    #: FileBrowser 登录密码；未配置时为 None
+    filebrowser_password: Optional[str] = None
+    #: FileBrowser 认证模式：api_key / password；未启用时为 None
+    filebrowser_auth_mode: Optional[Literal["api_key", "password"]] = None
+    #: OpenSandbox 使用的预先存在的 PVC 名称
+    pvc_name: Optional[str] = None
+    #: FileBrowser 卷功能是否启用
+    filebrowser_enabled: bool = False
 
 
 def _string(name: str, default: Optional[str] = None) -> str:
@@ -146,6 +165,63 @@ def _optional_url(name: str) -> str:
             f"环境变量 {_ENV_PREFIX + name} 必须为合法的 HTTP/HTTPS URL: {value!r}"
         )
     return value
+
+
+def _optional_env_value(name: str, *, strip: bool = False) -> Optional[str]:
+    """读取可选配置；空值及全空白值均视为未配置。"""
+    value = os.environ.get(_ENV_PREFIX + name)
+    if value is None or not value.strip():
+        return None
+    return value.strip() if strip else value
+
+
+# noinspection unnecessary-cast
+def _filebrowser_urls(raw_value: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """校验 FileBrowser 基础地址并生成内部资源 API 地址。"""
+    if raw_value is None:
+        return None, None
+
+    value = raw_value.strip()
+    if not value:
+        return None, None
+
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        _ = parsed.port  # 访问 port 以校验非法端口格式和范围
+        has_credentials = parsed.username is not None or parsed.password is not None
+    except ValueError as exc:
+        raise ConfigError(
+            f"环境变量 {_ENV_PREFIX}FILEBROWSER_URL 必须为不含认证信息的合法 HTTP/HTTPS URL"
+        ) from exc
+
+    if (
+        any(char.isspace() for char in value)
+        or any(ord(char) < 32 or ord(char) == 127 for char in value)
+        or parsed.scheme.lower() not in ("http", "https")
+        or not parsed.netloc
+        or not hostname
+        or has_credentials
+        or parsed.query
+        or parsed.fragment
+        or "?" in value
+        or "#" in value
+    ):
+        raise ConfigError(
+            f"环境变量 {_ENV_PREFIX}FILEBROWSER_URL 必须为不含认证信息的合法 HTTP/HTTPS URL"
+        )
+
+    # Keep the configured base address for the status API, while the client
+    # receives a canonical URL ending in exactly one /api segment.
+    scheme = cast(str, parsed.scheme).lower()
+    netloc = cast(str, parsed.netloc)
+    path = cast(str, parsed.path)
+    base_path = path.rstrip("/")
+    api_path = base_path if base_path == "/api" or base_path.endswith("/api") else (
+        f"{base_path}/api" if base_path else "/api"
+    )
+    api_url = urlunsplit((scheme, netloc, api_path, "", ""))
+    return value, api_url
 
 
 def _image_registry() -> str:
@@ -230,6 +306,43 @@ if _log_level not in _LOG_LEVELS:
         f"环境变量 {_ENV_PREFIX}LOG_LEVEL 仅允许 {' / '.join(_LOG_LEVELS)}，当前值: {_log_level!r}"
     )
 
+_filebrowser_url, _filebrowser_api_url = _filebrowser_urls(
+    _optional_env_value("FILEBROWSER_URL", strip=True)
+)
+_filebrowser_api_key = _optional_env_value("FILEBROWSER_API_KEY")
+_filebrowser_username = _optional_env_value("FILEBROWSER_USERNAME")
+_filebrowser_password = _optional_env_value("FILEBROWSER_PASSWORD")
+_pvc_name = _optional_env_value("PVC_NAME", strip=True)
+_filebrowser_auth_mode: Optional[Literal["api_key", "password"]] = None
+_filebrowser_enabled = False
+if (_filebrowser_username is None) != (_filebrowser_password is None):
+    raise ConfigError(
+        "FileBrowser 用户名和密码必须同时配置"
+    )
+if _filebrowser_url is None:
+    # URL 为空时，其他 FileBrowser 配置不单独启用卷功能；保留配置值供
+    # 诊断/状态模型使用，但客户端不会被创建。
+    if (
+        _filebrowser_api_key is not None
+        or _filebrowser_username is not None
+        or _filebrowser_password is not None
+    ):
+        logger.warning("FileBrowser 卷功能未启用：缺少 TA_SS_FILEBROWSER_URL")
+else:
+    if _pvc_name is None:
+        raise ConfigError(
+            "FileBrowser 卷功能已配置，但缺少必填环境变量 TA_SS_PVC_NAME"
+        )
+    if _filebrowser_username is not None and _filebrowser_password is not None:
+        _filebrowser_auth_mode = "password"
+    elif _filebrowser_api_key is not None:
+        _filebrowser_auth_mode = "api_key"
+    else:
+        raise ConfigError(
+            "FileBrowser 必须配置 API KEY 或完整的用户名密码认证"
+        )
+    _filebrowser_enabled = True
+
 settings: Settings = Settings(
     opensandbox_url=_string("OPENSANDBOX_URL"),
     opensandbox_api_key=_string_or_none("OPENSANDBOX_API_KEY"),
@@ -250,6 +363,14 @@ settings: Settings = Settings(
     container_npm_registry=_optional_url("PROXY_NPM_REGISTRY"),
     container_default_cpu=_float("CONTAINER_DEFAULT_CPU", 1.0, minimum=0.01),
     container_default_memory=_int("CONTAINER_DEFAULT_MEMORY", 1, minimum=1),
+    filebrowser_url=_filebrowser_url,
+    filebrowser_api_url=_filebrowser_api_url if _filebrowser_enabled else None,
+    filebrowser_api_key=_filebrowser_api_key,
+    filebrowser_username=_filebrowser_username,
+    filebrowser_password=_filebrowser_password,
+    filebrowser_auth_mode=_filebrowser_auth_mode,
+    pvc_name=_pvc_name,
+    filebrowser_enabled=_filebrowser_enabled,
 )
 
 

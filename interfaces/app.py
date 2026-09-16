@@ -29,6 +29,7 @@ from interfaces.admin.users import router as admin_user_router
 from interfaces.git import router as git_router
 from interfaces.user.containers import router as user_container_router
 from interfaces.user.users import router as user_user_router
+from interfaces.volume import router as volume_router
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_user_router)
     app.include_router(admin_state_router)
     app.include_router(admin_container_router)
+    app.include_router(volume_router)
     app.include_router(git_router)
 
     @app.exception_handler(AppError)

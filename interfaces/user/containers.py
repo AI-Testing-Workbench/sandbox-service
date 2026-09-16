@@ -50,7 +50,7 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
     "",
     response_model=CreateContainerResponse,
     status_code=200,
-    responses=api_responses("成功", 200, 400, 409, 502),
+    responses=api_responses("成功", 200, 400, 403, 409, 502),
 )
 def create_container(request: CreateContainerRequest) -> CreateContainerResponse:
     """创建并启动容器，固定使用管理员配置的镜像。"""
@@ -80,7 +80,7 @@ def create_container(request: CreateContainerRequest) -> CreateContainerResponse
     )
 
 
-@router.get("", response_model=ContainerIdsResponse, responses=api_responses("成功", 200, 400))
+@router.get("", response_model=ContainerIdsResponse, responses=api_responses("成功", 200, 400, 403))
 def query_container_ids(
     user_id: str,
     gitee_user: Optional[str] = None,
@@ -99,7 +99,7 @@ def query_container_ids(
     return ContainerIdsResponse(container_ids=ids)
 
 
-@router.get("/status", response_model=ContainerStatusListResponse, responses=api_responses("成功", 200, 400))
+@router.get("/status", response_model=ContainerStatusListResponse, responses=api_responses("成功", 200, 400, 403))
 def query_container_statuses(
     user_id: str,
     gitee_user: Optional[str] = None,
@@ -121,7 +121,7 @@ def query_container_statuses(
 @router.get(
     "/{container_id}",
     response_model=ContainerStatusResponse,
-    responses=api_responses("成功", 200, 404, 502),
+    responses=api_responses("成功", 200, 403, 404, 502),
 )
 def get_container_status(container_id: str) -> ContainerStatusResponse:
     """查询指定容器运行状态。"""

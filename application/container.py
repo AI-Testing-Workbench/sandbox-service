@@ -19,10 +19,21 @@ import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Iterator, NoReturn, Optional
+from typing import TYPE_CHECKING, Any, Iterator, NoReturn, Optional
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
+from application.blacklist import ensure_user_not_blacklisted
+from application.volume_paths import (
+    VolumePathPlan,
+    build_sandbox_volumes,
+    build_volume_path_plan,
+)
+from application.volume_storage import (
+    PreparedVolumeDirectories,
+    prepare_volume_directories,
+    rollback_volume_directories,
+)
 from config import Constants, settings
 from config import get_container_count_limit as _cfg_count_limit
 from config import get_default_image as _cfg_default_image
@@ -36,6 +47,7 @@ from domain.errors import (
     ExternalDependencyError,
     InvalidArgumentError,
     LimitReachedError,
+    VolumePathConflictError,
 )
 from domain.models import (
     ContainerStatus,
@@ -51,10 +63,15 @@ from infra.opensandbox.client import (
     SandboxNotFoundError,
 )
 from infra.opensandbox.types import (
-    CreatedSandbox,
     SandboxEndpoint,
     SandboxMetrics,
     SandboxStatus,
+    SandboxVolume,
+)
+from infra.filebrowser import (
+    FileBrowserClient,
+    FileBrowserConflictError,
+    FileBrowserNotFoundError,
 )
 from infra.orm import Container as ContainerRow
 from infra.repositories import (
@@ -81,7 +98,9 @@ __all__ = [
     "get_container_logs",
     "create_container",
     "get_opensandbox_client",
+    "get_filebrowser_client",
     "lifecycle_guard",
+    "cleanup_volume_for_container",
     "delete_missing_container_record",
     "start",
     "stop",
@@ -188,8 +207,64 @@ def delete_missing_container_record(container_id: str) -> None:
             row = repo.get(container_id)
             if row is None or row.deleted_at is not None:
                 return
+            cleanup_volume_for_container(row.user_id, row.service_id)
             repo.delete(container_id)
     logger.info("远端容器不存在，已删除数据库记录: %s", container_id)
+
+
+def cleanup_volume_for_container(user_id: str, service_id: str) -> None:
+    """尽力清理物理删除容器对应的 FileBrowser service/用户目录。
+
+    FileBrowser 清理失败不阻断调用方删除数据库记录；只有确认 service 目录
+    删除成功后才会检查并删除空的用户父目录。
+    """
+    if not settings.filebrowser_enabled:
+        return
+    try:
+        plan = build_volume_path_plan(user_id, service_id)
+        client = get_filebrowser_client()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "初始化 FileBrowser 卷清理失败: %s",
+            type(exc).__name__,
+        )
+        return
+
+    try:
+        try:
+            service_deleted = client.delete_resource(plan.service_path)
+        except FileBrowserNotFoundError:
+            service_deleted = True
+        if not service_deleted:
+            logger.error("FileBrowser service 目录删除未成功: %s", plan.service_path)
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "FileBrowser service 目录清理失败: path=%s, %s",
+            plan.service_path,
+            type(exc).__name__,
+        )
+        return
+
+    try:
+        try:
+            items = client.list_directory(plan.user_path)
+        except FileBrowserNotFoundError:
+            return
+        if not items.is_empty:
+            return
+        try:
+            user_deleted = client.delete_resource(plan.user_path)
+        except FileBrowserNotFoundError:
+            user_deleted = True
+        if not user_deleted:
+            logger.error("FileBrowser 空用户目录删除未成功: %s", plan.user_path)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "FileBrowser 用户目录清理失败: path=%s, %s",
+            plan.user_path,
+            type(exc).__name__,
+        )
 
 
 @dataclass(frozen=True)
@@ -296,6 +371,7 @@ class AdminStateView:
 # 客户端惰性单例（供测试注入）
 # ---------------------------------------------------------------------------
 _opensandbox_client: Optional[OpenSandboxClient] = None
+_filebrowser_client: Optional[FileBrowserClient] = None
 
 
 def get_opensandbox_client() -> OpenSandboxClient:
@@ -307,6 +383,18 @@ def get_opensandbox_client() -> OpenSandboxClient:
 
         client = OpenSandboxClient()
         _opensandbox_client = client
+    return client
+
+
+def get_filebrowser_client() -> FileBrowserClient:
+    """获取惰性 FileBrowser 客户端；卷功能关闭时禁止调用。"""
+    global _filebrowser_client
+    if not settings.filebrowser_enabled:
+        raise ExternalDependencyError("FileBrowser 卷功能未启用")
+    client = _filebrowser_client
+    if client is None:
+        client = FileBrowserClient()
+        _filebrowser_client = client
     return client
 
 
@@ -365,6 +453,26 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
         if service_id is None:
             raise ExternalDependencyError("创建 Git 初始化会话失败")
 
+        volume_plan: Optional[VolumePathPlan] = None
+        volume_client: Optional[FileBrowserClient] = None
+        prepared_volume_directories: Optional[PreparedVolumeDirectories] = None
+        volumes: Optional[list[SandboxVolume]] = None
+        if settings.filebrowser_enabled:
+            try:
+                volume_plan = build_volume_path_plan(params.user_id, service_id)
+                assert volume_plan is not None
+                volume_client = get_filebrowser_client()
+                assert volume_client is not None
+                prepared_volume_directories = prepare_volume_directories(
+                    volume_client,
+                    volume_plan,
+                )
+                volumes = build_sandbox_volumes(volume_plan, settings.pvc_name or "")
+            except Exception as exc:  # noqa: BLE001
+                rollback_volume_directories(volume_client, prepared_volume_directories)
+                get_git_session_store().discard_session(service_id)
+                _raise_volume_creation_error("准备卷目录", exc)
+
         container_type_value: str = params.container_type.value
         env: dict[str, str] = {
             "TESTAGENT_CLOUD_MODE": "1",  # 标记容器为云端
@@ -392,20 +500,32 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             _CONTAINER_TYPE_METADATA_KEY: container_type_value,
         }
         try:
-            created: CreatedSandbox = get_opensandbox_client().create(
-                image,
-                name=container_name,
-                env=env,
-                metadata=metadata,
-                resource_limits=_resource_limits(params),
-            )
+            opensandbox_client = get_opensandbox_client()
+            create_kwargs: dict[str, Any] = {
+                "name": container_name,
+                "env": env,
+                "metadata": metadata,
+                "resource_limits": _resource_limits(params),
+            }
+            if volumes is not None:
+                created = opensandbox_client.create(
+                    image,
+                    **create_kwargs,
+                    volumes=volumes,
+                )
+            else:
+                # 卷功能关闭时不向替身或 SDK 传递 volumes 参数。
+                created = opensandbox_client.create(image, **create_kwargs)
         except Exception as exc:
             # 创建响应丢失但远端已完成创建时，SDK 无法提供容器 ID；使用本次唯一的
             # metadata name 找回并回收这个无法直接寻址的远端资源。
             try:
                 _cleanup_failed_remote_create(container_name)
             finally:
-                get_git_session_store().discard_session(service_id)
+                try:
+                    rollback_volume_directories(volume_client, prepared_volume_directories)
+                finally:
+                    get_git_session_store().discard_session(service_id)
             if _is_image_not_found_error(exc):
                 if params.image is None:
                     raise DefaultImageNotConfiguredError(
@@ -417,10 +537,34 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
             _raise_backend_service_error("创建容器", exc)
 
         container_id = created.container_id
+        if volume_plan is not None and volume_client is not None:
+            try:
+                marker_plan = build_volume_path_plan(
+                    params.user_id,
+                    service_id,
+                    container_id,
+                )
+                if marker_plan.container_marker_path is None:
+                    raise ExternalDependencyError("无法生成容器卷标记文件路径")
+                volume_client.create_empty_file(marker_plan.container_marker_path)
+            except Exception as exc:  # noqa: BLE001
+                _cleanup_created_container(
+                    container_id,
+                    service_id,
+                    prepared_volume_directories,
+                    volume_client,
+                )
+                _raise_volume_creation_error("创建容器卷标记文件", exc)
+
         try:
             get_git_session_store().bind_container_id(service_id, container_id)
         except Exception as exc:
-            _cleanup_created_container(container_id, service_id)
+            _cleanup_created_container(
+                container_id,
+                service_id,
+                prepared_volume_directories,
+                volume_client,
+            )
             raise ExternalDependencyError("绑定 Git 初始化会话失败") from exc
         created_at = _now_iso()
         try:
@@ -443,7 +587,12 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 )
         except Exception as exc:
             logger.exception("容器已创建但保存数据库记录失败: %s", container_id)
-            _cleanup_created_container(container_id, service_id)
+            _cleanup_created_container(
+                container_id,
+                service_id,
+                prepared_volume_directories,
+                volume_client,
+            )
             raise ExternalDependencyError("保存容器记录失败") from exc
 
         return CreatedContainer(
@@ -458,8 +607,13 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
         )
 
 
-def _cleanup_created_container(container_id: str, service_id: str) -> None:
-    """回收已创建的远端容器并清理对应的 Git 内存会话。"""
+def _cleanup_created_container(
+    container_id: str,
+    service_id: str,
+    prepared_volume_directories: Optional[PreparedVolumeDirectories] = None,
+    volume_client: Optional[FileBrowserClient] = None,
+) -> None:
+    """回收已创建的远端容器、卷目录和 Git 内存会话。"""
     # noinspection broad-exception
     try:
         # 数据库写入失败或会话绑定失败时尽力回收远端容器，避免留下孤儿资源。
@@ -467,7 +621,11 @@ def _cleanup_created_container(container_id: str, service_id: str) -> None:
     except Exception:  # noqa: BLE001
         logger.exception("创建后回收远端容器失败: %s", container_id)
     finally:
-        get_git_session_store().discard_session(service_id)
+        try:
+            if prepared_volume_directories is not None and volume_client is not None:
+                rollback_volume_directories(volume_client, prepared_volume_directories)
+        finally:
+            get_git_session_store().discard_session(service_id)
 
 
 def _cleanup_failed_remote_create(container_name: str) -> None:
@@ -527,6 +685,7 @@ def _resolve_image(params: CreateContainerParams) -> str:
 def _validate_required(params: CreateContainerParams) -> None:
     if not params.user_id or not params.user_id.strip():
         raise InvalidArgumentError("user_id 不能为空")
+    ensure_user_not_blacklisted(params.user_id)
     gitee_values = (
         _normalise_optional_gitee_value(params.gitee_url),
         _normalise_optional_gitee_value(params.gitee_user),
@@ -615,9 +774,13 @@ def _check_creation_limits(
 # ---------------------------------------------------------------------------
 # 状态查询与剩余时间（T6.7）
 # ---------------------------------------------------------------------------
-def get_status(container_id: str) -> ContainerStatusView:
+def get_status(
+    container_id: str,
+    *,
+    enforce_user_policy: bool = True,
+) -> ContainerStatusView:
     """实时查询 OpenSandbox 获取状态信息；资源指标不可用时返回空值。"""
-    row = _require_active_record(container_id)
+    row = _require_active_record(container_id, enforce_user_policy=enforce_user_policy)
     try:
         status: SandboxStatus = get_opensandbox_client().get_status(container_id)
     except SandboxNotFoundError as exc:
@@ -665,8 +828,10 @@ def get_status(container_id: str) -> ContainerStatusView:
 def get_container_logs(container_id: str) -> str:
     """读取指定容器日志；管理员可读取仍保留的业务删除记录。"""
     with session_scope() as session:
-        if ContainerRepository(session).get(container_id) is None:
+        row = ContainerRepository(session).get(container_id)
+        if row is None:
             raise ContainerNotFoundError("容器不存在")
+        ensure_user_not_blacklisted(row.user_id)
 
     try:
         return get_opensandbox_client().get_logs(container_id)
@@ -735,6 +900,7 @@ def business_delete(container_id: str) -> None:
         row = repo.get(container_id)
         if row is None:
             raise ContainerNotFoundError("容器不存在")
+        ensure_user_not_blacklisted(row.user_id)
         if row.deleted_at is not None:
             raise ContainerNotFoundError("容器不存在")
         try:
@@ -760,6 +926,7 @@ def restore(container_id: str, expiration_hours: int) -> ContainerStatusView:
             row = repo.get(container_id)
             if row is None:
                 raise ContainerNotFoundError("容器不存在")
+            ensure_user_not_blacklisted(row.user_id)
             if row.deleted_at is None:
                 raise BusinessConflictError("容器未处于业务删除状态，无法恢复")
             try:
@@ -802,16 +969,22 @@ def _get_metrics(container_id: str) -> tuple[Optional[float], Optional[float]]:
 # ---------------------------------------------------------------------------
 def permanent_delete(container_id: str) -> None:
     """立即删除：OpenSandbox Delete 物理删除底层容器 + 删除 SQLite 记录（v4 §11.4）。"""
-    with session_scope() as session:
-        repo = ContainerRepository(session)
-        if repo.get(container_id) is None:
-            raise ContainerNotFoundError("容器不存在")
-    try:
-        get_opensandbox_client().delete(container_id)
-    except Exception as exc:
-        _raise_backend_service_error("删除容器", exc)
-    with session_scope() as session:
-        ContainerRepository(session).delete(container_id)
+    with lifecycle_guard():
+        with session_scope() as session:
+            repo = ContainerRepository(session)
+            row = repo.get(container_id)
+            if row is None:
+                raise ContainerNotFoundError("容器不存在")
+            ensure_user_not_blacklisted(row.user_id)
+            try:
+                get_opensandbox_client().delete(container_id)
+            except SandboxNotFoundError:
+                # 远端已不存在，仍需清理本地卷和记录。
+                pass
+            except Exception as exc:
+                _raise_backend_service_error("删除容器", exc)
+            cleanup_volume_for_container(row.user_id, row.service_id)
+            repo.delete(container_id)
 
 
 # ---------------------------------------------------------------------------
@@ -825,7 +998,10 @@ def set_expiration(container_id: str, expiration_hours: int) -> ExpirationView:
         with session_scope() as session:
             repo = ContainerRepository(session)
             row = repo.get(container_id)
-            if row is None or row.deleted_at is not None:
+            if row is None:
+                raise ContainerNotFoundError("容器不存在")
+            ensure_user_not_blacklisted(row.user_id)
+            if row.deleted_at is not None:
                 raise ContainerNotFoundError("容器不存在")
             repo.update_expiration(container_id, expiration_hours)
             expiration = add_hours_to_iso(row.created_at, expiration_hours)
@@ -849,6 +1025,7 @@ def query_container_ids(
     """
     if not user_id or not user_id.strip():
         raise InvalidArgumentError("user_id 不能为空")
+    ensure_user_not_blacklisted(user_id)
     with session_scope() as session:
         rows = ContainerRepository(session).list_active(
             user_id=user_id,
@@ -875,6 +1052,7 @@ def query_container_statuses(
     """
     if not user_id or not user_id.strip():
         raise InvalidArgumentError("user_id 不能为空")
+    ensure_user_not_blacklisted(user_id)
     with session_scope() as session:
         rows = ContainerRepository(session).list_active(
             user_id=user_id,
@@ -896,6 +1074,10 @@ def list_orphan_container_ids() -> list[str]:
 def delete_orphan_containers(container_ids: list[str]) -> None:
     """删除指定孤儿容器；单个失败不影响其他合法 ID 的处理。"""
     requested_ids = _normalise_orphan_container_ids(container_ids)
+    # 即使请求声称目标是孤儿容器，也先拒绝已登记黑名单用户的资源，避免
+    # 以孤儿校验路径绕过 container_id 归属策略。
+    for container_id in requested_ids:
+        _ensure_container_owner_allowed_if_present(container_id)
     not_orphan_ids: list[str] = []
     failed_ids: list[str] = []
 
@@ -947,6 +1129,7 @@ def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:
     invalid_names: list[str] = []
     failed_names: list[str] = []
     processed_ids: set[str] = set()
+    resolved_ids: list[tuple[str, str]] = []
 
     for pod_name in requested_names:
         container_id = _resolve_container_id_from_pod_name(pod_name, known_ids)
@@ -956,24 +1139,36 @@ def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:
         if container_id in processed_ids:
             continue
         processed_ids.add(container_id)
-        try:
-            client.delete(container_id)
-        except SandboxNotFoundError:
-            # 目标在解析和删除之间消失时，最终状态已经满足。
-            pass
-        except Exception as exc:  # noqa: BLE001
-            failed_names.append(pod_name)
-            logger.error(
-                "按 Pod 名称删除容器失败: %s (%s): %s: %s",
-                pod_name,
-                container_id,
-                type(exc).__name__,
-                exc,
-            )
-            continue
+        resolved_ids.append((pod_name, container_id))
+
+    # 先检查所有可解析的数据库归属，再执行任何远端删除，避免批量请求在
+    # 命中黑名单资源后已经产生部分副作用。
+    for _, container_id in resolved_ids:
+        _ensure_container_owner_allowed_if_present(container_id)
+
+    for pod_name, container_id in resolved_ids:
         with lifecycle_guard():
+            try:
+                client.delete(container_id)
+            except SandboxNotFoundError:
+                # 目标在解析和删除之间消失时，最终状态已经满足。
+                pass
+            except Exception as exc:  # noqa: BLE001
+                failed_names.append(pod_name)
+                logger.error(
+                    "按 Pod 名称删除容器失败: %s (%s): %s: %s",
+                    pod_name,
+                    container_id,
+                    type(exc).__name__,
+                    exc,
+                )
+                continue
             with session_scope() as session:
-                ContainerRepository(session).delete(container_id)
+                repo = ContainerRepository(session)
+                row = repo.get(container_id)
+                if row is not None:
+                    cleanup_volume_for_container(row.user_id, row.service_id)
+                    repo.delete(container_id)
 
     if invalid_names:
         raise InvalidArgumentError(
@@ -1008,6 +1203,7 @@ def get_admin_container(container_id: str) -> AdminContainerView:
         row = ContainerRepository(session).get(container_id)
     if row is None:
         raise ContainerNotFoundError("容器不存在")
+    ensure_user_not_blacklisted(row.user_id)
     return _to_admin_view(row)
 
 
@@ -1074,13 +1270,29 @@ def get_admin_state() -> AdminStateView:
 # ---------------------------------------------------------------------------
 # 内部工具
 # ---------------------------------------------------------------------------
-def _require_active_record(container_id: str) -> ContainerRow:
+def _require_active_record(
+    container_id: str,
+    *,
+    enforce_user_policy: bool = True,
+) -> ContainerRow:
     """取业务有效（非业务已删除）容器记录；不存在或已业务删除抛 404 语义错误。"""
     with session_scope() as session:
         row = ContainerRepository(session).get(container_id)
-    if row is None or row.deleted_at is not None:
+    if row is None:
+        raise ContainerNotFoundError("容器不存在")
+    if enforce_user_policy:
+        ensure_user_not_blacklisted(row.user_id)
+    if row.deleted_at is not None:
         raise ContainerNotFoundError("容器不存在")
     return row
+
+
+def _ensure_container_owner_allowed_if_present(container_id: str) -> None:
+    """校验已登记容器的用户；孤儿容器没有可确认的业务归属。"""
+    with session_scope() as session:
+        row = ContainerRepository(session).get(container_id)
+    if row is not None:
+        ensure_user_not_blacklisted(row.user_id)
 
 
 def _normalise_pod_names(pod_names: list[str]) -> list[str]:
@@ -1211,6 +1423,16 @@ def _raise_backend_service_error(operation: str, exc: Exception) -> NoReturn:
     raise ExternalDependencyError("后端服务错误") from exc
 
 
+def _raise_volume_creation_error(operation: str, exc: Exception) -> NoReturn:
+    """将卷准备/标记失败转换为安全的业务错误。"""
+    if isinstance(exc, VolumePathConflictError):
+        raise exc
+    if isinstance(exc, FileBrowserConflictError):
+        raise VolumePathConflictError("FileBrowser 卷路径已存在或发生冲突") from None
+    logger.error("FileBrowser %s失败: %s", operation, type(exc).__name__)
+    raise ExternalDependencyError("FileBrowser 服务错误") from None
+
+
 def _is_image_not_found_error(exc: Exception) -> bool:
     """判断 OpenSandbox 创建失败是否由镜像不存在导致。"""
     markers = (
@@ -1324,4 +1546,4 @@ def _get_admin_runtime(container_id: str) -> ContainerStatusView:
     if cached_status is not None:
         return ContainerStatusView(container_id=container_id, status=cached_status)
 
-    return get_status(container_id)
+    return get_status(container_id, enforce_user_policy=False)

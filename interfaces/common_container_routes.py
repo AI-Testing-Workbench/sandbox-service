@@ -67,7 +67,7 @@ def _register_action(
         operation_id=operation_id,
         name=operation_id,
         summary=summary,
-        responses=api_responses("成功 (无内容)", 204, 404, 409, 502),
+        responses=api_responses("成功 (无内容)", 204, 403, 404, 409, 502),
     )
     def action_endpoint(container_id: str) -> Response:
         action(container_id)

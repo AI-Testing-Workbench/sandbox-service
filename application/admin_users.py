@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+from application.blacklist import ensure_user_not_blacklisted
 from domain.errors import InvalidArgumentError, UserNotFoundError
 from infra.db import session_scope
 from infra.repositories import AdminUserRepository
@@ -23,6 +24,7 @@ __all__ = [
 def add_user(user_id: str) -> bool:
     """新增管理员用户；已存在（含本事务待提交）返回 False。"""
     _validate(user_id)
+    ensure_user_not_blacklisted(user_id)
     with session_scope() as session:
         return AdminUserRepository(session).add(user_id)
 
@@ -30,6 +32,7 @@ def add_user(user_id: str) -> bool:
 def remove_user(user_id: str) -> None:
     """删除管理员用户；用户不存在时抛出 404。"""
     _validate(user_id)
+    ensure_user_not_blacklisted(user_id)
     with session_scope() as session:
         repo = AdminUserRepository(session)
         if not repo.exists(user_id):
@@ -46,6 +49,7 @@ def list_users() -> list[str]:
 def is_admin(user_id: str) -> bool:
     """判断用户是否在管理员清单中。"""
     _validate(user_id)
+    ensure_user_not_blacklisted(user_id)
     with session_scope() as session:
         return AdminUserRepository(session).exists(user_id)
 

@@ -22,7 +22,7 @@ router = APIRouter(prefix="/user", tags=["用户 API"])
     "/check",
     response_model=AdminCheckResponse,
     status_code=200,
-    responses=api_responses("成功", 200, 400),
+    responses=api_responses("成功", 200, 400, 403),
 )
 def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
     """查询指定用户是否为管理员。"""

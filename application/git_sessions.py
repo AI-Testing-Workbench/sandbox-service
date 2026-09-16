@@ -15,6 +15,7 @@ from threading import RLock
 from typing import NoReturn, Optional
 from uuid import uuid4
 
+from application.blacklist import ensure_user_not_blacklisted
 from domain.errors import (
     BusinessConflictError,
     GitCredentialAlreadyClaimedError,
@@ -369,5 +370,6 @@ def _require_operator_user_id(value: Optional[str]) -> str:
 
 
 def _ensure_user_match(expected_user_id: str, operator_user_id: str) -> None:
+    ensure_user_not_blacklisted(expected_user_id)
     if expected_user_id != operator_user_id:
         raise GitResourceUserMismatchError("Git 资源不属于当前用户")

@@ -15,6 +15,7 @@ from infra.opensandbox.types import (
     SandboxEndpoint,
     SandboxMetrics,
     SandboxStatus,
+    SandboxVolume,
 )
 
 __all__ = [
@@ -26,4 +27,5 @@ __all__ = [
     "SandboxEndpoint",
     "SandboxMetrics",
     "SandboxStatus",
+    "SandboxVolume",
 ]

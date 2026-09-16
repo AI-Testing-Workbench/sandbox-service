@@ -9,6 +9,7 @@ from __future__ import annotations
 from domain.errors import (
     AppError,
     BusinessConflictError,
+    VolumePathConflictError,
     ContainerNotFoundError,
     DefaultImageNotConfiguredError,
     ExternalDependencyError,
@@ -21,6 +22,7 @@ from domain.errors import (
     InvalidArgumentError,
     LimitReachedError,
     UnauthorizedError,
+    UserBlacklistedError,
     UserNotFoundError,
 )
 from domain.models import (
@@ -43,12 +45,14 @@ __all__ = [
     "AppError",
     "InvalidArgumentError",
     "UnauthorizedError",
+    "UserBlacklistedError",
     "DefaultImageNotConfiguredError",
     "ContainerNotFoundError",
     "GitResourceNotFoundError",
     "GitResourceUserMismatchError",
     "UserNotFoundError",
     "BusinessConflictError",
+    "VolumePathConflictError",
     "GitSessionEndedError",
     "GitCredentialUnavailableError",
     "GitCredentialAlreadyClaimedError",

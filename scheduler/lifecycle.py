@@ -179,6 +179,9 @@ def purge_containers() -> list[str]:
                 # noinspection broad-exception
                 try:
                     _container.get_opensandbox_client().delete(container_id)
+                except SandboxNotFoundError:
+                    # 远端已不存在，仍可安全清理对应卷目录和本地记录。
+                    pass
                 except OpenSandboxError as exc:
                     # OpenSandbox 适配层已记录底层原因；这里仅保留调度上下文。
                     logger.error("物理删除失败 (被外部服务删除) %s: %s", container_id, exc)
@@ -191,6 +194,7 @@ def purge_containers() -> list[str]:
                         exc,
                     )
                     continue
+                _container.cleanup_volume_for_container(current.user_id, current.service_id)
                 repo.delete(container_id)
                 _discard_cached_status(container_id)
                 purged.append(container_id)

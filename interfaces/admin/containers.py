@@ -35,7 +35,10 @@ router = APIRouter(
     prefix="/admin/containers",
     tags=["管理员 API (容器操作)"],
     dependencies=[Depends(require_admin_access)],
-    responses={401: {"model": ErrorResponse, "description": "未认证"}},
+    responses={
+        401: {"model": ErrorResponse, "description": "未认证"},
+        403: {"model": ErrorResponse, "description": "用户被禁止"},
+    },
 )
 
 

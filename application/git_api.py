@@ -10,6 +10,7 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
+from application.blacklist import ensure_user_not_blacklisted
 from application.git_credentials import (
     GitCredential,
     get_persisted_credential,
@@ -55,6 +56,7 @@ __all__ = [
 def get_git_state(service_id: str, operator_user_id: Optional[str]) -> GitStatus:
     """读取资源的详细 Git 状态。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
+    ensure_user_not_blacklisted(operator_user_id)
     resource = get_git_session_store().resolve_service_resource(
         service_id,
         operator_user_id,
@@ -76,6 +78,7 @@ def report_git_status(
 ) -> GitStatus:
     """接收中间状态或最终状态；最终状态成功写库后才清理会话。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
+    ensure_user_not_blacklisted(operator_user_id)
     try:
         status = coerce_git_status(git_status)
     except ValueError as exc:
@@ -143,6 +146,7 @@ def get_git_credential(
 ) -> GitCredential:
     """领取临时或用户级凭证；无可用凭证时抛出携带状态的 409。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
+    ensure_user_not_blacklisted(operator_user_id)
     store = get_git_session_store()
     try:
         resource = store.resolve_service_resource(service_id, operator_user_id)
@@ -185,6 +189,7 @@ def submit_git_credential(
 ) -> None:
     """提交持久化或当前会话临时凭证，不返回密码。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
+    ensure_user_not_blacklisted(operator_user_id)
     store = get_git_session_store()
     resource = store.resolve_service_resource(service_id, operator_user_id)
     if resource.git_fin_status == GitFinalStatus.INITIALIZED.value:

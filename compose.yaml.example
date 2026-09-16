@@ -33,6 +33,16 @@ services:
       # 容器内 NPM 包代理源，留空表示不设置
       TA_SS_PROXY_NPM_REGISTRY:
 
+      # FileBrowser Quantum 的 Url
+      TA_SS_FILEBROWSER_URL: http://127.0.0.1:8081
+      # FileBrowser Quantum 的 API Token (二选一)
+      TA_SS_FILEBROWSER_API_KEY:
+      # FileBrowser Quantum 的用户名/密码 (二选一)
+      TA_SS_FILEBROWSER_USERNAME:
+      TA_SS_FILEBROWSER_PASSWORD:
+      # PVC 名称
+      TA_SS_PVC_NAME:
+
       # REST API 监听端口
       TA_SS_REST_API_PORT: 8080
       # REST API 文档鉴权使用的用户名和密码
