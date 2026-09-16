@@ -6,7 +6,8 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from application import admin_users
+from application import admin_users, whitelist
+from config import settings
 from interfaces.common import api_responses
 from interfaces.user.schemas import AdminCheckRequest, AdminCheckResponse
 
@@ -25,5 +26,11 @@ router = APIRouter(prefix="/user", tags=["用户 API"])
     responses=api_responses("成功", 200, 400, 403),
 )
 def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
-    """查询指定用户是否为管理员。"""
-    return AdminCheckResponse(admin=admin_users.is_admin(request.user_id))
+    """查询指定用户是否为管理员及其容器创建限制模式。"""
+    admin = admin_users.is_admin(request.user_id)
+    limit = (
+        "none"
+        if admin or whitelist.is_whitelisted(request.user_id)
+        else settings.container_create_limit_mode
+    )
+    return AdminCheckResponse(admin=admin, limit=limit)

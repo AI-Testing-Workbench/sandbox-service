@@ -7,6 +7,8 @@ Gitee 信息；容器过期时间和资源限制由服务端管理。用户容�
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from interfaces.common import (
@@ -82,6 +84,9 @@ class AdminCheckRequest(BaseModel):
 
 
 class AdminCheckResponse(BaseModel):
-    """用户管理员身份查询响应"""
+    """用户管理员身份及容器创建限制查询响应"""
 
     admin: bool = Field(description="是否为管理员")
+    limit: Literal["user", "repository", "none"] = Field(
+        description="容器创建限制模式"
+    )
