@@ -159,6 +159,18 @@ class ContainerRepository:
             return False, None
         return False, container.git_fin_status
 
+    def clear_git_fin_status_for_recovery(self, container_id: str) -> bool:
+        """清除启动恢复窗口内的旧 Git 终态，返回是否实际清除。"""
+        result = self._session.execute(
+            update(Container)
+            .where(
+                Container.container_id == container_id,
+                Container.git_fin_status.is_not(None),
+            )
+            .values(git_fin_status=None)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
 
 class SettingsRepository:
     """`settings` 表数据访问（config.py 的默认镜像 / 数量限制读写经本仓储）。"""

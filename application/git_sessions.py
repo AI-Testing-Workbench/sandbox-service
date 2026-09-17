@@ -33,7 +33,6 @@ from domain.models import (
     GitStatus,
     coerce_git_final_status,
     coerce_git_status,
-    is_git_final_status,
 )
 from infra.db import session_scope
 from infra.repositories import ContainerRepository
@@ -217,8 +216,8 @@ class GitSessionStore:
         """恢复本次容器启动的 Git 会话并将其置于 `starting`。
 
         容器入口进程可能在 OpenSandbox/Kubernetes 重启后重新执行。只要容器
-        仍处于创建后的恢复窗口内，且数据库没有最终状态，就允许当前进程的
-        活跃会话或已丢失的进程会话重新进入 `starting`。终态记录永不自动复活。
+        仍处于创建后的恢复窗口内，就允许当前进程的活跃会话或已丢失的进程
+        会话重新进入 `starting`；必要时清除该容器的旧 Git 终态。
         """
         service_id = _require_id(service_id, "service_id")
         operator_user_id = _require_operator_user_id(operator_user_id)
@@ -228,25 +227,17 @@ class GitSessionStore:
             session = self._by_service_id.get(service_id)
             if session is not None:
                 _ensure_user_match(session.service_user, operator_user_id)
-                if session.ended or is_git_final_status(session.git_status.value):
-                    raise GitSessionEndedError("Git 初始化会话已结束")
-                if session.git_status is GitStatus.STARTING:
+                if not session.ended and session.git_status is GitStatus.STARTING:
                     return session
-                if not _within_starting_recovery_window(session.created_at):
-                    raise BusinessConflictError("Git 状态不能回退到 starting")
-                session.clear_temporary_credential()
-                session.git_status = GitStatus.STARTING
-                return session
+                return self._reset_session_to_starting(session)
 
             ended = self._ended_service_sessions.get(service_id)
             if ended is not None:
-                ended_user, ended_status = ended
+                ended_user, _ = ended
                 _ensure_user_match(ended_user, operator_user_id)
-                if ended_status is not None:
-                    raise GitSessionEndedError("Git 初始化会话已结束")
 
-        # 进程重启或 discard_session 后，只有持久化容器记录仍处于未终态时
-        # 才能确认这是同一个未完成初始化，而不是一个旧 service_id 的重放。
+        # 进程重启或 discard_session 后，持久化容器记录用于确认这是同一个
+        # 近期初始化；若存在旧终态，则在恢复窗口内先清除再重新开始。
         with session_scope() as db_session:
             row = ContainerRepository(db_session).get_by_service_id(service_id)
 
@@ -257,23 +248,22 @@ class GitSessionStore:
         _ensure_user_match(row.user_id, operator_user_id)
         if row.deleted_at is not None:
             raise GitResourceNotFoundError("Git service_id 不存在")
-        if row.git_fin_status is not None:
-            raise GitSessionEndedError("Git 初始化会话已结束")
         if not row.container_id or not _within_starting_recovery_window(row.created_at):
             raise GitSessionEndedError("Git 初始化会话无法恢复")
+        if row.git_fin_status is not None:
+            with session_scope() as db_session:
+                if not ContainerRepository(db_session).clear_git_fin_status_for_recovery(
+                    row.container_id
+                ):
+                    raise GitSessionEndedError("Git 初始化会话无法恢复")
 
         with self._lock:
             # 在数据库读取期间如果已有请求恢复了会话，复用该会话而不覆盖其状态。
             existing = self._by_service_id.get(service_id)
             if existing is not None:
                 _ensure_user_match(existing.service_user, operator_user_id)
-                if existing.ended or is_git_final_status(existing.git_status.value):
-                    raise GitSessionEndedError("Git 初始化会话已结束")
-                if existing.git_status is not GitStatus.STARTING:
-                    if not _within_starting_recovery_window(existing.created_at):
-                        raise BusinessConflictError("Git 状态不能回退到 starting")
-                    existing.clear_temporary_credential()
-                    existing.git_status = GitStatus.STARTING
+                if existing.ended or existing.git_status is not GitStatus.STARTING:
+                    return self._reset_session_to_starting(existing)
                 return existing
 
             existing_by_container = self._by_container_id.get(row.container_id)
@@ -290,6 +280,35 @@ class GitSessionStore:
             if ended is not None:
                 self._forget_ended_service_session(service_id)
             return session
+
+    def _reset_session_to_starting(
+        self,
+        session: GitInitializationSession,
+    ) -> GitInitializationSession:
+        if not _within_starting_recovery_window(session.created_at):
+            raise BusinessConflictError("Git 状态不能回退到 starting")
+        if session.container_id is None:
+            raise GitSessionEndedError("Git 初始化会话已结束")
+        self._clear_persisted_final_status(session.container_id)
+        session.clear_temporary_credential()
+        session.ended = False
+        session.git_status = GitStatus.STARTING
+        return session
+
+    @staticmethod
+    def _clear_persisted_final_status(
+        container_id: str,
+    ) -> None:
+        """清除恢复窗口内的旧终态。"""
+        with session_scope() as db_session:
+            repository = ContainerRepository(db_session)
+            row = repository.get(container_id)
+            if row is None or row.deleted_at is not None:
+                return
+            if row.git_fin_status is None:
+                return
+            if not repository.clear_git_fin_status_for_recovery(container_id):
+                raise GitSessionEndedError("Git 初始化会话无法恢复")
 
     def set_temporary_credential(
         self,
