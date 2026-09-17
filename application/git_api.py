@@ -85,12 +85,15 @@ def report_git_status(
         raise InvalidArgumentError("Git 状态非法") from exc
 
     store = get_git_session_store()
+    if status is GitStatus.STARTING:
+        store.prepare_starting_session(service_id, operator_user_id)
+        return status
     resource = store.resolve_service_resource(service_id, operator_user_id)
     session = resource.session
     if status in GIT_INTERMEDIATE_STATUSES:
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
-        _validate_transition(session, status)
+        _validate_transition(session)
         store.update_status(service_id, operator_user_id, status)
         return status
 
@@ -214,12 +217,10 @@ def submit_git_credential(
         store.set_temporary_credential(service_id, operator_user_id, stored)
 
 
-def _validate_transition(session: GitInitializationSession, target: GitStatus) -> None:
-    """拒绝从终态回退或重新进入 starting；中间状态允许插件重试。"""
+def _validate_transition(session: GitInitializationSession) -> None:
+    """拒绝从终态回退；中间状态允许插件重试。"""
     if is_git_final_status(session.git_status.value):
         raise GitSessionEndedError("Git 初始化会话已结束")
-    if target is GitStatus.STARTING and session.git_status is not GitStatus.STARTING:
-        raise BusinessConflictError("Git 状态不能回退到 starting")
 
 
 def _final_status(value: Optional[str]) -> GitStatus:

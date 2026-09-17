@@ -4,13 +4,15 @@ Git 初始化内存会话（Git 凭证设计报告 §1.2、§2.3、§2.5）。
 - 创建阶段使用预生成的 `service_id`，OpenSandbox 成功后绑定真实 `container_id`。
 - 中间 Git 状态和非持久化凭证只保存在当前进程内存。
 - Git 操作只接受 `service_id`；真实 `container_id` 仅保存在创建会话内部用于落库绑定。
-- 结束会话时清除明文凭证并移除活跃映射；进程重启不会恢复内存会话。
+- 结束会话时清除明文凭证并移除活跃映射；启动恢复窗口内可从未完成的持久化
+  容器记录重新建立初始化会话。
 """
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from threading import RLock
 from typing import NoReturn, Optional
 from uuid import uuid4
@@ -31,6 +33,7 @@ from domain.models import (
     GitStatus,
     coerce_git_final_status,
     coerce_git_status,
+    is_git_final_status,
 )
 from infra.db import session_scope
 from infra.repositories import ContainerRepository
@@ -44,6 +47,7 @@ __all__ = [
 ]
 
 _ENDED_SERVICE_ID_LIMIT = 4096
+_STARTING_RECOVERY_WINDOW = timedelta(minutes=5)
 
 
 @dataclass
@@ -61,6 +65,7 @@ class GitInitializationSession:
     temporary_type: Optional[str] = None
     credential_claimed: bool = False
     ended: bool = False
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def clear_temporary_credential(self, *, claimed: bool = False) -> None:
         """清除会话中的全部临时凭证字段。"""
@@ -204,6 +209,88 @@ class GitSessionStore:
             resource.session.git_status = status
             return resource.session
 
+    def prepare_starting_session(
+        self,
+        service_id: str,
+        operator_user_id: str,
+    ) -> GitInitializationSession:
+        """恢复本次容器启动的 Git 会话并将其置于 `starting`。
+
+        容器入口进程可能在 OpenSandbox/Kubernetes 重启后重新执行。只要容器
+        仍处于创建后的恢复窗口内，且数据库没有最终状态，就允许当前进程的
+        活跃会话或已丢失的进程会话重新进入 `starting`。终态记录永不自动复活。
+        """
+        service_id = _require_id(service_id, "service_id")
+        operator_user_id = _require_operator_user_id(operator_user_id)
+
+        ended: Optional[tuple[str, Optional[GitStatus]]] = None
+        with self._lock:
+            session = self._by_service_id.get(service_id)
+            if session is not None:
+                _ensure_user_match(session.service_user, operator_user_id)
+                if session.ended or is_git_final_status(session.git_status.value):
+                    raise GitSessionEndedError("Git 初始化会话已结束")
+                if session.git_status is GitStatus.STARTING:
+                    return session
+                if not _within_starting_recovery_window(session.created_at):
+                    raise BusinessConflictError("Git 状态不能回退到 starting")
+                session.clear_temporary_credential()
+                session.git_status = GitStatus.STARTING
+                return session
+
+            ended = self._ended_service_sessions.get(service_id)
+            if ended is not None:
+                ended_user, ended_status = ended
+                _ensure_user_match(ended_user, operator_user_id)
+                if ended_status is not None:
+                    raise GitSessionEndedError("Git 初始化会话已结束")
+
+        # 进程重启或 discard_session 后，只有持久化容器记录仍处于未终态时
+        # 才能确认这是同一个未完成初始化，而不是一个旧 service_id 的重放。
+        with session_scope() as db_session:
+            row = ContainerRepository(db_session).get_by_service_id(service_id)
+
+        if row is None:
+            if ended is not None:
+                raise GitSessionEndedError("Git 初始化会话已结束")
+            raise GitResourceNotFoundError("Git service_id 不存在")
+        _ensure_user_match(row.user_id, operator_user_id)
+        if row.deleted_at is not None:
+            raise GitResourceNotFoundError("Git service_id 不存在")
+        if row.git_fin_status is not None:
+            raise GitSessionEndedError("Git 初始化会话已结束")
+        if not row.container_id or not _within_starting_recovery_window(row.created_at):
+            raise GitSessionEndedError("Git 初始化会话无法恢复")
+
+        with self._lock:
+            # 在数据库读取期间如果已有请求恢复了会话，复用该会话而不覆盖其状态。
+            existing = self._by_service_id.get(service_id)
+            if existing is not None:
+                _ensure_user_match(existing.service_user, operator_user_id)
+                if existing.ended or is_git_final_status(existing.git_status.value):
+                    raise GitSessionEndedError("Git 初始化会话已结束")
+                if existing.git_status is not GitStatus.STARTING:
+                    if not _within_starting_recovery_window(existing.created_at):
+                        raise BusinessConflictError("Git 状态不能回退到 starting")
+                    existing.clear_temporary_credential()
+                    existing.git_status = GitStatus.STARTING
+                return existing
+
+            existing_by_container = self._by_container_id.get(row.container_id)
+            if existing_by_container is not None:
+                raise BusinessConflictError("Git container_id 已被其他会话占用")
+            session = GitInitializationSession(
+                service_id=service_id,
+                service_user=row.user_id,
+                created_at=_parse_created_at(row.created_at),
+                container_id=row.container_id,
+            )
+            self._by_service_id[service_id] = session
+            self._by_container_id[row.container_id] = session
+            if ended is not None:
+                self._forget_ended_service_session(service_id)
+            return session
+
     def set_temporary_credential(
         self,
         service_id: str,
@@ -343,6 +430,14 @@ class GitSessionStore:
             expired = self._ended_service_order.popleft()
             self._ended_service_sessions.pop(expired, None)
 
+    def _forget_ended_service_session(self, service_id: str) -> None:
+        """移除一次已验证可恢复的非终态会话 tombstone。"""
+        self._ended_service_sessions.pop(service_id, None)
+        try:
+            self._ended_service_order.remove(service_id)
+        except ValueError:
+            pass
+
     def _raise_missing_active_session(self, service_id: str) -> NoReturn:
         if service_id in self._ended_service_sessions:
             raise GitSessionEndedError("Git 初始化会话已结束")
@@ -373,3 +468,28 @@ def _ensure_user_match(expected_user_id: str, operator_user_id: str) -> None:
     ensure_user_not_blacklisted(expected_user_id)
     if expected_user_id != operator_user_id:
         raise GitResourceUserMismatchError("Git 资源不属于当前用户")
+
+
+def _parse_created_at(value: Optional[str]) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise GitSessionEndedError("Git 初始化会话无法恢复")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise GitSessionEndedError("Git 初始化会话无法恢复") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _within_starting_recovery_window(value: datetime | str | None) -> bool:
+    try:
+        created_at = _parse_created_at(value) if isinstance(value, str) else value
+    except GitSessionEndedError:
+        return False
+    if created_at is None:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - created_at
+    return timedelta(0) <= age <= _STARTING_RECOVERY_WINDOW
