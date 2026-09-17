@@ -60,6 +60,7 @@ from infra.opensandbox.client import (
     OpenSandboxError,
     SandboxFailedError,
     SandboxNotFoundError,
+    normalize_log_text,
 )
 from infra.opensandbox.types import (
     SandboxEndpoint,
@@ -825,9 +826,7 @@ def get_container_logs(container_id: str) -> str:
 
     try:
         logs: str | bytes = get_opensandbox_client().get_logs(container_id)
-        if isinstance(logs, bytes):
-            return logs.decode("utf-8", errors="replace")
-        return logs
+        return normalize_log_text(logs)
     except SandboxNotFoundError as exc:
         raise ContainerNotFoundError("后端容器不存在") from exc
     except Exception as exc:

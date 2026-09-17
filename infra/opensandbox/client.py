@@ -11,6 +11,7 @@ OpenSandbox 集成层（v4 §8）。
 
 from __future__ import annotations
 
+import ast
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
@@ -54,6 +55,7 @@ logging.getLogger("opensandbox.sync.adapters.metrics_adapter").addFilter(
 __all__ = [
     "OpenSandboxClient",
     "OpenSandboxError",
+    "normalize_log_text",
     "SandboxFailedError",
     "SandboxNotFoundError",
 ]
@@ -74,6 +76,27 @@ _STOP_IDEMPOTENT_STATES = frozenset({
 })
 
 _T = TypeVar("_T")
+
+
+def normalize_log_text(value: str | bytes) -> str:
+    """将日志的真实字节或字符串形式字节归一化为 UTF-8 文本。"""
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    if (
+        len(value) >= 3
+        and value.startswith("b")
+        and value[1] in ("'", '"')
+        and value.endswith(value[1])
+    ):
+        try:
+            parsed = ast.literal_eval(value)
+        except (SyntaxError, ValueError):
+            return value[2:-1]
+        if isinstance(parsed, bytes):
+            return parsed.decode("utf-8", errors="replace")
+
+    return value
 
 
 def _to_sdk_volume(volume: SandboxVolume) -> SdkVolume:
@@ -306,7 +329,7 @@ class OpenSandboxClient:
             )
             raise OpenSandboxError("获取容器日志失败")
         # 日志接口偶尔不带可靠的 charset；统一按 UTF-8 解码，保证上层拿到文本。
-        return response.content.decode("utf-8", errors="replace")
+        return normalize_log_text(response.content.decode("utf-8", errors="replace"))
 
     def _get_metrics_raw(self, container_id: str) -> object:
         """通过直连 execd 端点获取 metrics；仅修正服务容器不可达的 loopback 主机。"""
