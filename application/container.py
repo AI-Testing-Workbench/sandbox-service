@@ -1477,17 +1477,17 @@ def _is_image_not_found_error(exc: Exception) -> bool:
 def _to_admin_view(row: ContainerRow) -> AdminContainerView:
     cpu_usage: Optional[float] = None
     memory_usage: Optional[float] = None
+    # 有效期来自持久化业务字段，不能依赖运行时状态缓存。
+    expires_at = add_hours_to_iso(row.created_at, row.expiration_hours)
     if row.deleted_at is not None:
         status = ContainerStatus.BUSINESS_DELETED
         endpoint: Optional[str] = None
         started_at: Optional[str] = None
-        expires_at = add_hours_to_iso(row.created_at, row.expiration_hours)
     else:
         runtime = _get_admin_runtime(row.container_id)
         status = resolve_container_status(row.git_fin_status, runtime.status)
         endpoint = runtime.endpoint
         started_at = runtime.started_at
-        expires_at = runtime.expires_at
         cpu_usage = runtime.cpu_usage
         memory_usage = runtime.memory_usage
 
