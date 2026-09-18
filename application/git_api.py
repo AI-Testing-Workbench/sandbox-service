@@ -13,6 +13,7 @@ from typing import Optional
 from application.blacklist import ensure_user_not_blacklisted
 from application.git_credentials import (
     GitCredential,
+    delete_persisted_credential,
     get_persisted_credential,
     save_credential,
 )
@@ -94,6 +95,9 @@ def report_git_status(
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         _validate_transition(session)
+        if status is GitStatus.CREDENTIAL_REJECTED:
+            # 认证失败说明用户级凭证已经失效；临时凭证由会话层同步清理。
+            delete_persisted_credential(resource.user_id)
         store.update_status(service_id, operator_user_id, status)
         return status
 

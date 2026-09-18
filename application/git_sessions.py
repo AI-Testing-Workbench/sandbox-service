@@ -205,6 +205,8 @@ class GitSessionStore:
         with self._lock:
             if resource.session.ended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
+            if status is GitStatus.CREDENTIAL_REJECTED:
+                resource.session.clear_temporary_credential()
             resource.session.git_status = status
             return resource.session
 

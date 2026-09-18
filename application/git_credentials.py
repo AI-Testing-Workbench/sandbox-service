@@ -22,6 +22,7 @@ __all__ = [
     "validate_credential",
     "save_credential",
     "get_persisted_credential",
+    "delete_persisted_credential",
 ]
 
 
@@ -104,6 +105,15 @@ def get_persisted_credential(user_id: str) -> GitCredential | None:
             git_email=row.git_email,
             git_password=password,
         )
+
+
+def delete_persisted_credential(user_id: str) -> None:
+    """删除用户级持久化凭证；不存在时保持幂等。"""
+    if not isinstance(user_id, str) or not user_id.strip():
+        raise InvalidArgumentError("用户 ID 不能为空")
+
+    with session_scope() as session:
+        GitCredentialRepository(session).delete(user_id)
 
 
 def _require_text(value: str, field_name: str) -> None:
