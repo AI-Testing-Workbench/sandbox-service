@@ -78,73 +78,98 @@ def report_git_status(
     git_status: str | GitStatus,
 ) -> GitStatus:
     """接收中间状态或最终状态；最终状态成功写库后才清理会话。"""
-    operator_user_id = _require_operator_user_id(operator_user_id)
-    ensure_user_not_blacklisted(operator_user_id)
+    incoming_status = _status_for_log(git_status)
+    current_status = incoming_status
+    logger.info(
+        "Git 状态上报开始: service_id=%s, incoming_status=%s",
+        service_id,
+        incoming_status,
+    )
     try:
-        status = coerce_git_status(git_status)
-    except ValueError as exc:
-        raise InvalidArgumentError("Git 状态非法") from exc
+        operator_user_id = _require_operator_user_id(operator_user_id)
+        ensure_user_not_blacklisted(operator_user_id)
+        try:
+            status = coerce_git_status(git_status)
+        except ValueError as exc:
+            raise InvalidArgumentError("Git 状态非法") from exc
+        current_status = status.value
 
-    store = get_git_session_store()
-    if status is GitStatus.STARTING:
-        store.prepare_starting_session(service_id, operator_user_id)
-        return status
-    resource = store.resolve_service_resource(service_id, operator_user_id)
-    session = resource.session
-    if status in GIT_INTERMEDIATE_STATUSES:
-        if session is None:
+        store = get_git_session_store()
+        if status is GitStatus.STARTING:
+            starting_session = store.prepare_starting_session(service_id, operator_user_id)
+            current_status = starting_session.git_status.value
+            return status
+        current_status = "unknown"
+        resource = store.resolve_service_resource(service_id, operator_user_id)
+        current_status = _resource_status_for_log(resource)
+        session = resource.session
+        if status in GIT_INTERMEDIATE_STATUSES:
+            if session is None:
+                raise GitSessionEndedError("Git 初始化会话已结束")
+            _validate_transition(session)
+            if status is GitStatus.CREDENTIAL_REJECTED:
+                # 认证失败说明用户级凭证已经失效；临时凭证由会话层同步清理。
+                delete_persisted_credential(resource.user_id)
+            updated_session = store.update_status(service_id, operator_user_id, status)
+            current_status = updated_session.git_status.value
+            return status
+
+        try:
+            final_status = coerce_git_final_status(status)
+        except ValueError as exc:
+            raise InvalidArgumentError("Git 最终状态非法") from exc
+        if resource.git_fin_status is not None:
+            current_status = resource.git_fin_status
+            if (
+                final_status is GitFinalStatus.INITIALIZED
+                and resource.git_fin_status == GitFinalStatus.INITIALIZED.value
+            ):
+                _finish_git_session(store, service_id, final_status)
+                return GitStatus(final_status.value)
+            raise BusinessConflictError("Git 初始化已经有最终状态")
+        if resource.container_id is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
-        _validate_transition(session)
-        if status is GitStatus.CREDENTIAL_REJECTED:
-            # 认证失败说明用户级凭证已经失效；临时凭证由会话层同步清理。
-            delete_persisted_credential(resource.user_id)
-        store.update_status(service_id, operator_user_id, status)
-        return status
+        if session is not None and session.ended:
+            raise GitSessionEndedError("Git 初始化会话已结束")
 
-    try:
-        final_status = coerce_git_final_status(status)
-    except ValueError as exc:
-        raise InvalidArgumentError("Git 最终状态非法") from exc
-    if resource.git_fin_status is not None:
-        if (
-            final_status is GitFinalStatus.INITIALIZED
-            and resource.git_fin_status == GitFinalStatus.INITIALIZED.value
-        ):
-            _finish_git_session(store, service_id, final_status)
-            return GitStatus(final_status.value)
-        raise BusinessConflictError("Git 初始化已经有最终状态")
-    if resource.container_id is None:
-        raise GitSessionEndedError("Git 初始化会话已结束")
-    if session is not None and session.ended:
-        raise GitSessionEndedError("Git 初始化会话已结束")
-
-    try:
-        with session_scope() as db_session:
-            updated, existing_status = ContainerRepository(db_session).set_git_fin_status_if_unset(
-                resource.container_id,
-                final_status.value,
-            )
-            if not updated:
-                if existing_status is None:
-                    raise GitResourceNotFoundError("容器记录不存在")
-                if (
-                    final_status is GitFinalStatus.INITIALIZED
-                    and existing_status == GitFinalStatus.INITIALIZED.value
-                ):
-                    idempotent = True
+        try:
+            with session_scope() as db_session:
+                updated, existing_status = ContainerRepository(db_session).set_git_fin_status_if_unset(
+                    resource.container_id,
+                    final_status.value,
+                )
+                if not updated:
+                    if existing_status is None:
+                        current_status = "not_found"
+                        raise GitResourceNotFoundError("容器记录不存在")
+                    current_status = existing_status
+                    if (
+                        final_status is GitFinalStatus.INITIALIZED
+                        and existing_status == GitFinalStatus.INITIALIZED.value
+                    ):
+                        idempotent = True
+                    else:
+                        raise BusinessConflictError("Git 初始化已经有最终状态")
                 else:
-                    raise BusinessConflictError("Git 初始化已经有最终状态")
-            else:
-                idempotent = False
-    except (BusinessConflictError, GitResourceNotFoundError):
-        raise
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Git 最终状态写入失败: %s", type(exc).__name__)
-        raise ExternalDependencyError("保存 Git 初始化结果失败") from exc
+                    idempotent = False
+        except (BusinessConflictError, GitResourceNotFoundError):
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise ExternalDependencyError("保存 Git 初始化结果失败") from exc
 
-    if idempotent or updated:
-        _finish_git_session(store, service_id, final_status)
-    return GitStatus(final_status.value)
+        if idempotent or updated:
+            current_status = final_status.value
+            _finish_git_session(store, service_id, final_status)
+        return GitStatus(final_status.value)
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "Git 状态上报失败: service_id=%s, incoming_status=%s, current_status=%s, error=%s",
+            service_id,
+            incoming_status,
+            current_status,
+            type(exc.__cause__ if exc.__cause__ is not None else exc).__name__,
+        )
+        raise
 
 
 def get_git_credential(
@@ -240,6 +265,20 @@ def _credential_conflict_status(resource: GitResource) -> GitStatus:
     if resource.session is not None:
         return resource.session.git_status
     return _final_status(resource.git_fin_status)
+
+
+def _status_for_log(value) -> str:
+    """将 Git 状态转换为不含凭证内容的日志字段。"""
+    return str(getattr(value, "value", value))
+
+
+def _resource_status_for_log(resource: GitResource) -> str:
+    """读取报告失败时资源当前的详细状态。"""
+    if resource.session is not None:
+        return resource.session.git_status.value
+    if resource.git_fin_status is not None:
+        return resource.git_fin_status
+    return "unknown"
 
 
 def _finish_git_session(
