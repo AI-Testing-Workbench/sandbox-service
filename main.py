@@ -10,20 +10,46 @@
 import logging
 import sys
 import threading
+import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # noinspection unused-imports
 import config  # noqa: E402  导入即校验 TA_SS_* 环境变量
-from config import settings  # noqa: E402
+from config import Constants, settings  # noqa: E402
 from infra.db import init_db  # noqa: E402
 from scheduler.lifecycle import run_loop  # noqa: E402
 
 
-def main() -> None:
+_LOG_TIMEZONE = ZoneInfo(Constants.TIMEZONE.value)
+
+
+class _ProjectLocalTime:
+    """将日志时间戳转换为项目固定的北京时间。"""
+
+    def __call__(self, timestamp: float | int | None) -> time.struct_time:
+        if timestamp is None:
+            timestamp = time.time()
+        return datetime.fromtimestamp(timestamp, _LOG_TIMEZONE).timetuple()
+
+
+_PROJECT_LOCALTIME = _ProjectLocalTime()
+
+
+def _configure_logging() -> None:
+    # logging 和 Uvicorn 都基于 Formatter.converter；显式绑定项目时区，
+    # 避免容器宿主机的本地时区影响日志时间。
+    # 使用可调用对象，避免普通函数赋给类属性后被绑定为实例方法。
+    logging.Formatter.converter = _PROJECT_LOCALTIME
     logging.basicConfig(
         level=settings.log_level,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
         stream=sys.stdout,
     )
+
+
+def main() -> None:
+    _configure_logging()
     logger = logging.getLogger("main")
     logger.info("初始化数据库中...")
     init_db()
