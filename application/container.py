@@ -109,6 +109,7 @@ __all__ = [
     "restore",
     "permanent_delete",
     "set_expiration",
+    "map_container_id",
     "query_container_ids",
     "list_orphan_container_ids",
     "delete_orphan_containers",
@@ -998,6 +999,27 @@ def set_expiration(container_id: str, expiration_hours: int) -> ExpirationView:
             repo.update_expiration(container_id, expiration_hours)
             expiration = add_hours_to_iso(row.created_at, expiration_hours)
     return ExpirationView(container_id=container_id, expires_at=expiration)
+
+
+# ---------------------------------------------------------------------------
+# 用户/服务映射
+# ---------------------------------------------------------------------------
+def map_container_id(user_id: str, service_id: str) -> str:
+    """按用户 ID 和服务 ID 返回业务有效容器 ID。"""
+    if not user_id or not user_id.strip():
+        raise InvalidArgumentError("user_id 不能为空")
+    if not service_id or not service_id.strip():
+        raise InvalidArgumentError("service_id 不能为空")
+    ensure_user_not_blacklisted(user_id)
+
+    with session_scope() as session:
+        row = ContainerRepository(session).get_by_service_id(service_id)
+        if row is None or row.deleted_at is not None:
+            raise ContainerNotFoundError("服务不存在")
+        ensure_user_not_blacklisted(row.user_id)
+        if row.user_id != user_id:
+            raise ContainerNotFoundError("服务不存在")
+        return row.container_id
 
 
 # ---------------------------------------------------------------------------

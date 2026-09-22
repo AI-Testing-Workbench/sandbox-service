@@ -6,10 +6,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from application import admin_users, whitelist
+from application import admin_users, container, whitelist
 from config import settings
 from interfaces.common import api_responses
-from interfaces.user.schemas import AdminCheckRequest, AdminCheckResponse
+from interfaces.user.schemas import (
+    AdminCheckRequest,
+    AdminCheckResponse,
+    MapContainerRequest,
+    MapContainerResponse,
+)
 
 __all__ = [
     "router",
@@ -34,3 +39,16 @@ def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
         else settings.container_create_limit_mode
     )
     return AdminCheckResponse(admin=admin, limit=limit)
+
+
+@router.post(
+    "/map",
+    response_model=MapContainerResponse,
+    status_code=200,
+    responses=api_responses("成功", 200, 400, 403, 404),
+)
+def map_container(request: MapContainerRequest) -> MapContainerResponse:
+    """查询服务 ID 对应的容器 ID。"""
+    return MapContainerResponse(
+        container_id=container.map_container_id(request.user_id, request.service_id)
+    )

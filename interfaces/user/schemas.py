@@ -23,6 +23,8 @@ __all__ = [
     "ContainerStatusResponse",
     "ContainerStatusListResponse",
     "ContainerIdsResponse",
+    "MapContainerRequest",
+    "MapContainerResponse",
     "AdminCheckRequest",
     "AdminCheckResponse",
     "ErrorResponse",
@@ -73,6 +75,21 @@ class ContainerStatusListResponse(BaseModel):
 
 class ContainerIdsResponse(BaseModel):
     container_ids: list[str] = Field(description="容器 ID 列表")
+
+
+class MapContainerRequest(BaseModel):
+    """按用户 ID 和服务 ID 查询容器映射请求。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, description="用户 ID")
+    service_id: str = Field(min_length=1, description="服务 ID")
+
+
+class MapContainerResponse(BaseModel):
+    """用户/服务映射响应。"""
+
+    container_id: str = Field(description="容器 ID")
 
 
 class AdminCheckRequest(BaseModel):
