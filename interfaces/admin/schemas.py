@@ -61,7 +61,7 @@ class SetDefaultImageRequest(ImageReferenceRequest):
 
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="容器类型: testagent_cloud / autotest_cloud",
+        description="云端沙箱类型: testagent_cloud / autotest_cloud",
     )
 
 
@@ -91,7 +91,7 @@ class DefaultImageResponse(BaseModel):
     full_name: Optional[str] = Field(default=None, description="当前的默认镜像，未设置时为空")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="容器类型: testagent_cloud / autotest_cloud",
+        description="云端沙箱类型: testagent_cloud / autotest_cloud",
     )
 
 
@@ -114,7 +114,7 @@ class UserMutationResponse(BaseModel):
 
 
 class AdminCreateContainerRequest(ContainerCreateRequestBase):
-    """管理员创建容器请求"""
+    """管理员创建云端沙箱请求"""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -145,14 +145,14 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
     expiration_hours: Optional[int] = Field(
         default=settings.container_default_expiration_hours,
         ge=0,
-        description="容器过期时间，0 表示永不过期",
+        description="云端沙箱过期时间，0 表示永不过期",
     )
     cpu: Optional[float] = Field(default=None, gt=0, description="CPU 核数")
     memory: Optional[int] = Field(default=None, gt=0, description="内存大小，单位 Gi")
 
 
 class AdminContainerResponse(ContainerRuntimeResponse):
-    """完整容器信息"""
+    """完整云端沙箱信息"""
 
     image: str = Field(description="完整镜像名称")
     user_id: str = Field(description="用户 ID")
@@ -160,70 +160,70 @@ class AdminContainerResponse(ContainerRuntimeResponse):
     gitee_repository: str = Field(description="码云仓库")
     gitee_branch: Optional[str] = Field(default=None, description="码云分支，未设置时为空")
     gitee_url: str = Field(description="码云仓库地址")
-    created_at: str = Field(description="容器创建时间")
-    expiration_hours: int = Field(description="容器运行时长，单位小时")
+    created_at: str = Field(description="云端沙箱创建时间")
+    expiration_hours: int = Field(description="云端沙箱运行时长，单位小时")
     authorize_general_account: bool = Field(description="是否授权通用码云账户登录")
     deleted_at: Optional[str] = Field(default=None, description="业务删除时间，未业务删除时为空")
     business_deleted: bool = Field(description="是否已业务删除")
 
 
 class AdminCreateContainerResponse(BaseModel):
-    """管理员创建响应"""
+    """管理员创建云端沙箱响应"""
 
-    container_id: str = Field(description="容器 ID")
+    container_id: str = Field(description="云端沙箱 ID")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="容器类型: testagent_cloud / autotest_cloud",
+        description="云端沙箱类型: testagent_cloud / autotest_cloud",
     )
     novnc_url: Optional[str] = Field(
         default=None,
-        description="autotest_cloud 容器的 noVNC 访问地址；其他类型为空",
+        description="autotest_cloud 云端沙箱的 noVNC 访问地址；其他类型为空",
     )
-    status: str = Field(description="容器状态")
-    endpoint: Optional[str] = Field(default=None, description="容器 SSH 访问端点")
-    started_at: Optional[str] = Field(default=None, description="容器启动时间")
-    expires_at: Optional[str] = Field(default=None, description="容器预计删除时间")
-    cpu_usage: Optional[float] = Field(default=None, description="容器 CPU 使用率")
-    memory_usage: Optional[float] = Field(default=None, description="容器内存使用率")
+    status: str = Field(description="云端沙箱状态")
+    endpoint: Optional[str] = Field(default=None, description="云端沙箱 SSH 访问端点")
+    started_at: Optional[str] = Field(default=None, description="云端沙箱启动时间")
+    expires_at: Optional[str] = Field(default=None, description="云端沙箱预计删除时间")
+    cpu_usage: Optional[float] = Field(default=None, description="云端沙箱 CPU 使用率")
+    memory_usage: Optional[float] = Field(default=None, description="云端沙箱内存使用率")
     image: str = Field(description="完整镜像名称")
     user_id: str = Field(description="用户 ID")
     gitee_user: str = Field(description="码云用户名")
     gitee_repository: str = Field(description="码云仓库")
     gitee_branch: Optional[str] = Field(default=None, description="码云分支，未设置时为空")
     gitee_url: str = Field(description="码云仓库地址")
-    created_at: str = Field(description="容器创建时间")
-    expiration_hours: int = Field(description="容器运行时长，单位小时")
+    created_at: str = Field(description="云端沙箱创建时间")
+    expiration_hours: int = Field(description="云端沙箱运行时长，单位小时")
     authorize_general_account: bool = Field(description="是否授权通用码云账户登录")
     deleted_at: Optional[str] = Field(default=None, description="业务删除时间，未业务删除时为空")
     business_deleted: bool = Field(description="是否已业务删除")
-    service_id: str = Field(description="容器初始化时的服务 ID")
+    service_id: str = Field(description="云端沙箱初始化会话 ID")
 
 
 class AdminContainerListResponse(BaseModel):
-    """全部容器信息响应"""
+    """全部云端沙箱信息响应"""
 
-    containers: list[AdminContainerResponse] = Field(description="全部容器完整信息")
+    containers: list[AdminContainerResponse] = Field(description="全部云端沙箱完整信息")
 
 
 class OrphanContainerListResponse(BaseModel):
-    """孤儿容器 ID 列表响应"""
+    """孤儿云端沙箱 ID 列表响应"""
 
-    container_ids: list[str] = Field(description="容器 ID 列表")
+    container_ids: list[str] = Field(description="云端沙箱 ID 列表")
 
 
 class OrphanContainerDeleteRequest(BaseModel):
-    """孤儿容器批量删除请求"""
+    """孤儿云端沙箱批量删除请求"""
 
     model_config = ConfigDict(extra="forbid")
 
     container_ids: list[str] = Field(
         min_length=1,
-        description="容器 ID 列表",
+        description="云端沙箱 ID 列表",
     )
 
 
 class PodDeleteRequest(BaseModel):
-    """按 K8s Pod 名称物理删除沙盒请求"""
+    """按 K8s Pod 名称物理删除云端沙箱请求"""
 
     model_config = ConfigDict(
         extra="forbid",
@@ -241,28 +241,28 @@ class PodDeleteRequest(BaseModel):
 
 
 class AdminStateResponse(BaseModel):
-    """沙盒服务状态响应"""
+    """云端沙箱状态响应"""
 
-    container_count: int = Field(description="活跃容器数")
-    whitelist_container_count: int = Field(description="白名单用户容器数")
-    admin_container_count: int = Field(description="管理员用户容器数")
+    container_count: int = Field(description="活跃云端沙箱数")
+    whitelist_container_count: int = Field(description="白名单用户云端沙箱数")
+    admin_container_count: int = Field(description="管理员用户云端沙箱数")
     whitelist_count: int = Field(description="白名单用户数")
     admin_count: int = Field(description="管理员用户数")
 
 
 class ContainerLimitRequest(BaseModel):
-    """容器数量及资源限制变更请求"""
+    """云端沙箱数量及资源限制变更请求"""
 
     model_config = ConfigDict(extra="forbid")
 
-    container_limit: int = Field(ge=0, description="容器数量上限，0 表示取消数量限制")
-    cpu: float = Field(gt=0, description="全部容器 CPU 限制，单位为核数")
-    memory: int = Field(gt=0, description="全部容器内存限制，单位为 Gi")
+    container_limit: int = Field(ge=0, description="云端沙箱数量上限，0 表示取消数量限制")
+    cpu: float = Field(gt=0, description="全部云端沙箱 CPU 限制，单位为核数")
+    memory: int = Field(gt=0, description="全部云端沙箱内存限制，单位为 Gi")
 
 
 class ContainerLimitResponse(BaseModel):
-    """容器数量及资源限制响应"""
+    """云端沙箱数量及资源限制响应"""
 
-    container_limit: int = Field(description="当前容器限制")
-    cpu: float = Field(description="全部容器 CPU 限制，单位为核数")
-    memory: int = Field(description="全部容器内存限制，单位为 Gi")
+    container_limit: int = Field(description="当前云端沙箱数量限制")
+    cpu: float = Field(description="全部云端沙箱 CPU 限制，单位为核数")
+    memory: int = Field(description="全部云端沙箱内存限制，单位为 Gi")

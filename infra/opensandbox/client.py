@@ -119,7 +119,7 @@ class OpenSandboxError(Exception):
 
 
 class SandboxFailedError(OpenSandboxError):
-    """远端沙盒处于 Failed 终态，不能通过 Resume 重新启动。"""
+    """远端容器处于 Failed 终态，不能通过 Resume 重新启动。"""
 
 
 class SandboxNotFoundError(OpenSandboxError):
@@ -372,7 +372,7 @@ class OpenSandboxClient:
         if current is not None and current.state.strip().upper() == "RUNNING":
             return
         if current is not None and current.state.strip().upper() == "FAILED":
-            raise SandboxFailedError("Failed 状态的沙盒不能 Resume")
+            raise SandboxFailedError("Failed 状态的容器不能 Resume")
         try:
             sandbox = SandboxSync.resume(
                 container_id,
@@ -416,7 +416,7 @@ class OpenSandboxClient:
         except SandboxNotFoundError:
             return
         if current.state.strip().upper() == "FAILED":
-            raise SandboxFailedError("Failed 状态的沙盒不能 Restart")
+            raise SandboxFailedError("Failed 状态的容器不能 Restart")
         self.stop(container_id)
         self.start(container_id)
 

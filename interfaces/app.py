@@ -45,7 +45,7 @@ _INTERNAL_REFERENCE_PATTERN = re.compile(
 
 def create_app() -> FastAPI:
     """构建 FastAPI 应用（REST 业务端点 + 错误映射 + 文档登录保护）。"""
-    app = FastAPI(title="TestAgent Cloud Sandbox Service", version="1.0.0")
+    app = FastAPI(title="TestAgent Cloud 云端沙箱", version="1.0.0")
     app.include_router(user_container_router)
     app.include_router(user_user_router)
     app.include_router(admin_image_router)

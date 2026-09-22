@@ -29,12 +29,12 @@ class ErrorResponse(BaseModel):
 
 
 class ContainerCreateRequestBase(BaseModel):
-    """容器创建参数"""
+    """云端沙箱创建参数"""
 
     user_id: str = Field(description="用户 ID")
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="容器类型：testagent_cloud TestAgentCloud / autotest_cloud 自动化跑批（启用 Chrome/VNC）",
+        description="云端沙箱类型：testagent_cloud TestAgentCloud / autotest_cloud 自动化跑批（启用 Chrome/VNC）",
     )
     gitee_user: Optional[str] = Field(default=None, description="码云用户名")
     gitee_repository: Optional[str] = Field(default=None, description="码云仓库")
@@ -47,37 +47,37 @@ class ContainerCreateRequestBase(BaseModel):
 
 
 class ContainerRuntimeResponse(BaseModel):
-    """容器基本属性字段"""
+    """云端沙箱基本属性字段"""
 
-    container_id: str = Field(description="容器 ID")
+    container_id: str = Field(description="云端沙箱 ID")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="容器类型：testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / autotest_cloud",
     )
     novnc_url: Optional[str] = Field(
         default=None,
-        description="autotest_cloud 容器的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",
+        description="autotest_cloud 云端沙箱的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",
     )
-    status: str = Field(description="容器状态")
+    status: str = Field(description="云端沙箱状态")
     git_fin_status: str = Field(
         default="pending",
         description="Git 初始化最终状态",
     )
-    endpoint: Optional[str] = Field(default=None, description="容器 SSH 访问端点")
-    started_at: Optional[str] = Field(default=None, description="容器启动时间")
-    expires_at: Optional[str] = Field(default=None, description="容器预计删除时间")
+    endpoint: Optional[str] = Field(default=None, description="云端沙箱 SSH 访问端点")
+    started_at: Optional[str] = Field(default=None, description="云端沙箱启动时间")
+    expires_at: Optional[str] = Field(default=None, description="云端沙箱预计删除时间")
     cpu_usage: Optional[float] = Field(
         default=None,
-        description="容器 CPU 使用率",
+        description="云端沙箱 CPU 使用率",
     )
     memory_usage: Optional[float] = Field(
         default=None,
-        description="容器内存使用率",
+        description="云端沙箱内存使用率",
     )
 
 
 class ExpirationRequest(BaseModel):
-    """设置容器过期时间请求"""
+    """设置云端沙箱过期时间请求"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -87,15 +87,15 @@ class ExpirationRequest(BaseModel):
 
     expiration_hours: int = Field(
         ge=0,
-        description="容器过期时间，0 表示永不过期",
+        description="云端沙箱过期时间，0 表示永不过期",
     )
 
 
 class ExpirationResponse(BaseModel):
-    """设置容器过期时间响应"""
+    """设置云端沙箱过期时间响应"""
 
-    container_id: str = Field(description="容器 ID")
-    expires_at: Optional[str] = Field(description="预计业务删除时间，容器永不过期时为空")
+    container_id: str = Field(description="云端沙箱 ID")
+    expires_at: Optional[str] = Field(description="预计业务删除时间，云端沙箱永不过期时为空")
 
 
 _ERROR_LABELS = {

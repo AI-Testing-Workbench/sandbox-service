@@ -141,7 +141,7 @@ def report_git_status(
                 if not updated:
                     if existing_status is None:
                         current_status = "not_found"
-                        raise GitResourceNotFoundError("容器记录不存在")
+                        raise GitResourceNotFoundError("云端沙箱记录不存在")
                     current_status = existing_status
                     if (
                         final_status is GitFinalStatus.INITIALIZED

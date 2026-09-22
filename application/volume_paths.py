@@ -18,7 +18,7 @@ __all__ = [
 ]
 
 
-# 每个清单项同时表示容器目标路径和 service 目录下的相对路径后缀。
+# 每个清单项同时表示容器目标路径和会话目录下的相对路径后缀。
 FILEBROWSER_MOUNT_PATHS: list[str] = [
     "/app",
     "/root/.git-helper",
@@ -26,7 +26,7 @@ FILEBROWSER_MOUNT_PATHS: list[str] = [
 
 
 class VolumePathError(ValueError):
-    """用户、服务或容器标识不能安全地作为 POSIX 路径段。"""
+    """用户、会话或容器标识不能安全地作为 POSIX 路径段。"""
 
 
 @dataclass(frozen=True)
@@ -40,7 +40,7 @@ class MountPathPlan:
 
 @dataclass(frozen=True)
 class VolumePathPlan:
-    """一次沙盒卷生命周期所需的完整路径规划。"""
+    """一次容器卷生命周期所需的完整路径规划。"""
 
     user_id: str
     service_id: str
@@ -65,7 +65,7 @@ def build_volume_path_plan(
     service_id: str,
     container_id: Optional[str] = None,
 ) -> VolumePathPlan:
-    """生成用户/服务目录、挂载目录、PVC 子路径和清理路径。
+    """生成用户/会话目录、挂载目录、PVC 子路径和清理路径。
 
     `container_id` 在 OpenSandbox 创建成功后才可用；未提供时不规划容器 ID
     零字节标记文件。所有路径使用 POSIX 语义，不依赖宿主机操作系统。

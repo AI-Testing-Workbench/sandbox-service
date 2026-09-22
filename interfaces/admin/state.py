@@ -18,7 +18,7 @@ __all__ = [
 
 router = APIRouter(
     prefix="/admin",
-    tags=["管理员 API (容器操作)"],
+    tags=["管理员 API (云端沙箱操作)"],
     dependencies=[Depends(require_admin_access)],
     responses={
         401: {"model": ErrorResponse, "description": "未认证"},
@@ -33,7 +33,7 @@ router = APIRouter(
     responses=api_responses("成功", 200),
 )
 def get_state() -> AdminStateResponse:
-    """获取容器及用户清单基础统计。"""
+    """获取云端沙箱及用户清单基础统计。"""
     view = container_service.get_admin_state()
     return AdminStateResponse(
         container_count=view.container_count,

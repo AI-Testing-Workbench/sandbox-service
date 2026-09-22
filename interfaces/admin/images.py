@@ -133,7 +133,7 @@ def delete_image(request: ImageDeleteRequest) -> Response:
     responses=api_responses("成功 (无内容)", 204, 400, 409, 502),
 )
 def set_default_image(request: SetDefaultImageRequest) -> Response:
-    """设置指定容器类型的默认镜像。"""
+    """设置指定云端沙箱类型的默认镜像。"""
     image_service.set_default_image(request.full_name, request.type)
     return Response(status_code=204)
 
@@ -146,10 +146,10 @@ def set_default_image(request: SetDefaultImageRequest) -> Response:
 def unset_default_image(
     container_type: ContainerType = Query(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="容器类型：testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / autotest_cloud",
     ),
 ) -> Response:
-    """取消设置指定容器类型的默认镜像。"""
+    """取消设置指定云端沙箱类型的默认镜像。"""
     image_service.unset_default_image(container_type)
     return Response(status_code=204)
 
@@ -162,10 +162,10 @@ def unset_default_image(
 def get_default_image(
     container_type: ContainerType = Query(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="容器类型：testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / autotest_cloud",
     ),
 ) -> DefaultImageResponse:
-    """获取指定容器类型的默认镜像。"""
+    """获取指定云端沙箱类型的默认镜像。"""
     return DefaultImageResponse(
         type=container_type.value,
         full_name=image_service.get_default_image(container_type),

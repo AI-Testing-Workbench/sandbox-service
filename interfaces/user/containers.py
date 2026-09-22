@@ -1,5 +1,5 @@
 """
-用户 REST API 容器端点。
+用户 REST API 云端沙箱端点。
 
 - 端点薄壳：业务逻辑在应用层（`application.container`），本层仅做参数传递与响应组装。
 - 错误由 `AppError` 异常体系抛出，`app.py` 统一映射 HTTP 状态码（v4 §14.10）；
@@ -53,7 +53,7 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
     responses=api_responses("成功", 200, 400, 403, 409, 502),
 )
 def create_container(request: CreateContainerRequest) -> CreateContainerResponse:
-    """创建并启动容器，固定使用管理员配置的镜像。"""
+    """创建并启动云端沙箱，固定使用管理员配置的镜像。"""
     created = container.create_container(
         container.CreateContainerParams(
             user_id=request.user_id,
@@ -66,7 +66,7 @@ def create_container(request: CreateContainerRequest) -> CreateContainerResponse
             authorize_general_account=request.authorize_general_account,
         )
     )
-    # 创建成功后实时查询一次端点与启动时间，查询失败按外部服务错误返回。
+    # 创建成功后实时查询一次端点与启动时间，查询失败按外部依赖错误返回。
     view = container.get_status(created.container_id)
     return CreateContainerResponse(
         container_id=created.container_id,
@@ -80,7 +80,11 @@ def create_container(request: CreateContainerRequest) -> CreateContainerResponse
     )
 
 
-@router.get("", response_model=ContainerIdsResponse, responses=api_responses("成功", 200, 400, 403))
+@router.get(
+    "",
+    response_model=ContainerIdsResponse,
+    responses=api_responses("成功", 200, 400, 403),
+)
 def query_container_ids(
     user_id: str,
     gitee_user: Optional[str] = None,
@@ -88,7 +92,7 @@ def query_container_ids(
     gitee_branch: Optional[str] = None,
     container_type: Optional[ContainerType] = None,
 ) -> ContainerIdsResponse:
-    """按条件查询容器 ID。"""
+    """按条件查询云端沙箱 ID。"""
     ids = container.query_container_ids(
         user_id=user_id,
         gitee_user=gitee_user,
@@ -99,7 +103,11 @@ def query_container_ids(
     return ContainerIdsResponse(container_ids=ids)
 
 
-@router.get("/status", response_model=ContainerStatusListResponse, responses=api_responses("成功", 200, 400, 403))
+@router.get(
+    "/status",
+    response_model=ContainerStatusListResponse,
+    responses=api_responses("成功", 200, 400, 403),
+)
 def query_container_statuses(
     user_id: str,
     gitee_user: Optional[str] = None,
@@ -107,7 +115,7 @@ def query_container_statuses(
     gitee_branch: Optional[str] = None,
     container_type: Optional[ContainerType] = None,
 ) -> ContainerStatusListResponse:
-    """按条件一次性批量查询容器状态，避免先查 ID 列表再逐个查询的多轮往返。"""
+    """按条件一次性批量查询云端沙箱状态，避免先查 ID 列表再逐个查询的多轮往返。"""
     views = container.query_container_statuses(
         user_id=user_id,
         gitee_user=gitee_user,
@@ -124,7 +132,7 @@ def query_container_statuses(
     responses=api_responses("成功", 200, 403, 404, 502),
 )
 def get_container_status(container_id: str) -> ContainerStatusResponse:
-    """查询指定容器运行状态。"""
+    """查询指定云端沙箱运行状态。"""
     return _to_status_response(container.get_status(container_id))
 
 

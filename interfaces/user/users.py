@@ -31,7 +31,7 @@ router = APIRouter(prefix="/user", tags=["用户 API"])
     responses=api_responses("成功", 200, 400, 403),
 )
 def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
-    """查询指定用户是否为管理员及其容器创建限制模式。"""
+    """查询指定用户是否为管理员及其云端沙箱创建限制模式。"""
     admin = admin_users.is_admin(request.user_id)
     limit = (
         "none"
@@ -48,7 +48,7 @@ def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
     responses=api_responses("成功", 200, 400, 403, 404),
 )
 def map_container(request: MapContainerRequest) -> MapContainerResponse:
-    """查询服务 ID 对应的容器 ID。"""
+    """查询云端沙箱会话 ID 对应的云端沙箱 ID。"""
     return MapContainerResponse(
         container_id=container.map_container_id(request.user_id, request.service_id)
     )

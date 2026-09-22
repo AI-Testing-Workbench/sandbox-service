@@ -524,7 +524,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                         "默认镜像不存在，请联系管理员解决"
                     ) from exc
                 raise InvalidArgumentError(
-                    "镜像不存在，请检查镜像字段或者默认镜像设置后再创建容器"
+                    "镜像不存在，请检查镜像字段或者默认镜像设置后再创建云端沙箱"
                 ) from exc
             _raise_backend_service_error("创建容器", exc)
 
@@ -537,7 +537,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                     container_id,
                 )
                 if marker_plan.container_marker_path is None:
-                    raise ExternalDependencyError("无法生成容器卷标记文件路径")
+                    raise ExternalDependencyError("无法生成云端沙箱卷标记文件路径")
                 volume_client.create_empty_file(marker_plan.container_marker_path)
             except Exception as exc:  # noqa: BLE001
                 _cleanup_created_container(
@@ -585,7 +585,7 @@ def create_container(params: CreateContainerParams) -> CreatedContainer:
                 prepared_volume_directories,
                 volume_client,
             )
-            raise ExternalDependencyError("保存容器记录失败") from exc
+            raise ExternalDependencyError("保存云端沙箱记录失败") from exc
 
         return CreatedContainer(
             container_id=container_id,
@@ -746,7 +746,7 @@ def _check_creation_limits(
     mode = settings.container_create_limit_mode
     if mode == "user":
         if repo.count_active(user_id=user_id, container_type=container_type.value) >= 1:
-            raise LimitReachedError("当前不允许同一用户创建多个同类型容器")
+            raise LimitReachedError("当前不允许同一用户创建多个同类型云端沙箱")
     elif mode == "repository":
         if repo.count_active(
             user_id=user_id,
@@ -754,13 +754,13 @@ def _check_creation_limits(
             gitee_user=gitee_user,
             container_type=container_type.value,
         ) >= 1:
-            raise LimitReachedError("当前不允许同一用户为单个仓库创建多个同类型容器")
+            raise LimitReachedError("当前不允许同一用户为单个仓库创建多个同类型云端沙箱")
     else:
         raise BusinessConflictError(f"不支持的创建限制模式: {mode}")
 
     limit = _cfg_count_limit()
     if 0 < limit <= repo.count_active():
-        raise LimitReachedError("可用容器数量已达到上限")
+        raise LimitReachedError("可用云端沙箱数量已达到上限")
 
 
 # ---------------------------------------------------------------------------
@@ -777,7 +777,7 @@ def get_status(
         status: SandboxStatus = get_opensandbox_client().get_status(container_id)
     except SandboxNotFoundError as exc:
         delete_missing_container_record(container_id)
-        raise ContainerNotFoundError("后端容器不存在") from exc
+        raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception as exc:
         _raise_backend_service_error("获取容器状态", exc)
 
@@ -789,7 +789,7 @@ def get_status(
         endpoint = ep.endpoint
     except SandboxNotFoundError as exc:
         delete_missing_container_record(container_id)
-        raise ContainerNotFoundError("后端容器不存在") from exc
+        raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception as exc:  # noqa: BLE001
         _raise_backend_service_error("获取容器端点", exc)
 
@@ -822,14 +822,14 @@ def get_container_logs(container_id: str) -> str:
     with session_scope() as session:
         row = ContainerRepository(session).get(container_id)
         if row is None:
-            raise ContainerNotFoundError("容器不存在")
+            raise ContainerNotFoundError("云端沙箱不存在")
         ensure_user_not_blacklisted(row.user_id)
 
     try:
         logs: str | bytes = get_opensandbox_client().get_logs(container_id)
         return normalize_log_text(logs)
     except SandboxNotFoundError as exc:
-        raise ContainerNotFoundError("后端容器不存在") from exc
+        raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception as exc:
         _raise_backend_service_error("获取容器日志错误", exc)
 
@@ -843,7 +843,7 @@ def start(container_id: str) -> None:
     try:
         get_opensandbox_client().start(container_id)
     except SandboxFailedError as exc:
-        raise BusinessConflictError("失败状态的容器不能直接启动，请先删除后重新创建") from exc
+        raise BusinessConflictError("失败状态的云端沙箱不能直接启动，请先删除后重新创建") from exc
     except Exception as exc:
         _raise_backend_service_error("启动容器", exc)
     from scheduler.lifecycle import mark_container_start_requested
@@ -872,7 +872,7 @@ def restart(container_id: str) -> None:
     try:
         get_opensandbox_client().restart(container_id)
     except SandboxFailedError as exc:
-        raise BusinessConflictError("失败状态的容器不能直接重启，请先删除后重新创建") from exc
+        raise BusinessConflictError("失败状态的云端沙箱不能直接重启，请先删除后重新创建") from exc
     except Exception as exc:
         _raise_backend_service_error("重启容器", exc)
     from scheduler.lifecycle import mark_container_start_requested
@@ -892,10 +892,10 @@ def business_delete(container_id: str) -> None:
         repo = ContainerRepository(session)
         row = repo.get(container_id)
         if row is None:
-            raise ContainerNotFoundError("容器不存在")
+            raise ContainerNotFoundError("云端沙箱不存在")
         ensure_user_not_blacklisted(row.user_id)
         if row.deleted_at is not None:
-            raise ContainerNotFoundError("容器不存在")
+            raise ContainerNotFoundError("云端沙箱不存在")
         try:
             get_opensandbox_client().stop(container_id)
         except Exception as exc:
@@ -918,15 +918,15 @@ def restore(container_id: str, expiration_hours: int) -> ContainerStatusView:
             repo = ContainerRepository(session)
             row = repo.get(container_id)
             if row is None:
-                raise ContainerNotFoundError("容器不存在")
+                raise ContainerNotFoundError("云端沙箱不存在")
             ensure_user_not_blacklisted(row.user_id)
             if row.deleted_at is None:
-                raise BusinessConflictError("容器未处于业务删除状态，无法恢复")
+                raise BusinessConflictError("云端沙箱未处于业务删除状态，无法恢复")
             try:
                 # OpenSandbox 的普通 start 对不存在容器按幂等成功处理；恢复必须先严格确认远端记录仍存在。
                 get_opensandbox_client().get_status(container_id)
             except SandboxNotFoundError as exc:
-                raise ContainerNotFoundError("后端容器不存在，无法恢复") from exc
+                raise ContainerNotFoundError("云端沙箱后端不存在，无法恢复") from exc
             except Exception as exc:
                 _raise_backend_service_error("检查容器状态", exc)
             try:
@@ -949,7 +949,7 @@ def _get_metrics(container_id: str) -> tuple[Optional[float], Optional[float]]:
         metrics = get_metrics(container_id)
     except SandboxNotFoundError as exc:
         delete_missing_container_record(container_id)
-        raise ContainerNotFoundError("后端容器不存在") from exc
+        raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception:
         return None, None
     if not isinstance(metrics, SandboxMetrics):
@@ -967,7 +967,7 @@ def permanent_delete(container_id: str) -> None:
             repo = ContainerRepository(session)
             row = repo.get(container_id)
             if row is None:
-                raise ContainerNotFoundError("容器不存在")
+                raise ContainerNotFoundError("云端沙箱不存在")
             ensure_user_not_blacklisted(row.user_id)
             try:
                 get_opensandbox_client().delete(container_id)
@@ -992,20 +992,20 @@ def set_expiration(container_id: str, expiration_hours: int) -> ExpirationView:
             repo = ContainerRepository(session)
             row = repo.get(container_id)
             if row is None:
-                raise ContainerNotFoundError("容器不存在")
+                raise ContainerNotFoundError("云端沙箱不存在")
             ensure_user_not_blacklisted(row.user_id)
             if row.deleted_at is not None:
-                raise ContainerNotFoundError("容器不存在")
+                raise ContainerNotFoundError("云端沙箱不存在")
             repo.update_expiration(container_id, expiration_hours)
             expiration = add_hours_to_iso(row.created_at, expiration_hours)
     return ExpirationView(container_id=container_id, expires_at=expiration)
 
 
 # ---------------------------------------------------------------------------
-# 用户/服务映射
+# 用户/容器映射
 # ---------------------------------------------------------------------------
 def map_container_id(user_id: str, service_id: str) -> str:
-    """按用户 ID 和服务 ID 返回业务有效容器 ID。"""
+    """按用户 ID 和内部 `service_id` 返回业务有效容器 ID。"""
     if not user_id or not user_id.strip():
         raise InvalidArgumentError("user_id 不能为空")
     if not service_id or not service_id.strip():
@@ -1015,10 +1015,10 @@ def map_container_id(user_id: str, service_id: str) -> str:
     with session_scope() as session:
         row = ContainerRepository(session).get_by_service_id(service_id)
         if row is None or row.deleted_at is not None:
-            raise ContainerNotFoundError("服务不存在")
+            raise ContainerNotFoundError("云端沙箱不存在")
         ensure_user_not_blacklisted(row.user_id)
         if row.user_id != user_id:
-            raise ContainerNotFoundError("服务不存在")
+            raise ContainerNotFoundError("云端沙箱不存在")
         return row.container_id
 
 
@@ -1122,7 +1122,7 @@ def delete_orphan_containers(container_ids: list[str]) -> None:
         details = ", ".join(not_orphan_ids)
         if failed_ids:
             details += f"；删除失败: {', '.join(failed_ids)}"
-        raise InvalidArgumentError(f"以下容器不是孤儿容器: {details}")
+        raise InvalidArgumentError(f"以下云端沙箱不是孤儿容器: {details}")
     if failed_ids:
         raise ExternalDependencyError(
             f"以下孤儿容器删除失败: {', '.join(failed_ids)}"
@@ -1130,11 +1130,11 @@ def delete_orphan_containers(container_ids: list[str]) -> None:
 
 
 def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:
-    """按 K8s Pod 名称物理删除沙盒（仅管理 API）。
+    """按 K8s Pod 名称物理删除容器（仅管理 API）。
 
     直接 `kubectl delete pod` 会被 BatchSandbox 控制器重建（表现为「自动重启」）。
-    本接口把 Pod 名称解析回 OpenSandbox 沙盒 ID 后调用管理面删除，连带删除
-    BatchSandbox CR，Pod 不会被重建。已不存在的沙盒按幂等成功处理，并清理同 ID
+    本接口把 Pod 名称解析回 OpenSandbox 容器 ID 后调用管理面删除，连带删除
+    BatchSandbox CR，Pod 不会被重建。已不存在的容器按幂等成功处理，并清理同 ID
     的本地数据库记录。
     """
     requested_names = _normalise_pod_names(pod_names)
@@ -1186,7 +1186,7 @@ def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:
 
     if invalid_names:
         raise InvalidArgumentError(
-            f"以下 Pod 名称无法解析为沙盒 ID: {', '.join(invalid_names)}"
+            f"以下 Pod 名称无法解析为容器 ID: {', '.join(invalid_names)}"
         )
     if failed_names:
         raise ExternalDependencyError(
@@ -1216,7 +1216,7 @@ def get_admin_container(container_id: str) -> AdminContainerView:
     with session_scope() as session:
         row = ContainerRepository(session).get(container_id)
     if row is None:
-        raise ContainerNotFoundError("容器不存在")
+        raise ContainerNotFoundError("云端沙箱不存在")
     ensure_user_not_blacklisted(row.user_id)
     return _to_admin_view(row)
 
@@ -1293,11 +1293,11 @@ def _require_active_record(
     with session_scope() as session:
         row = ContainerRepository(session).get(container_id)
     if row is None:
-        raise ContainerNotFoundError("容器不存在")
+        raise ContainerNotFoundError("云端沙箱不存在")
     if enforce_user_policy:
         ensure_user_not_blacklisted(row.user_id)
     if row.deleted_at is not None:
-        raise ContainerNotFoundError("容器不存在")
+        raise ContainerNotFoundError("云端沙箱不存在")
     return row
 
 
@@ -1327,7 +1327,7 @@ def _normalise_pod_names(pod_names: list[str]) -> list[str]:
 
 
 def _list_managed_container_ids(client: OpenSandboxClient) -> set[str]:
-    """尽力获取带本服务来源标记的沙盒 ID；失败时返回空集合（仍可用 UUID 解析）。"""
+    """尽力获取带本服务来源标记的容器 ID；失败时返回空集合（仍可用 UUID 解析）。"""
     try:
         return set(
             client.list_container_ids(
@@ -1336,7 +1336,7 @@ def _list_managed_container_ids(client: OpenSandboxClient) -> set[str]:
         )
     except Exception as exc:  # noqa: BLE001
         logger.debug(
-            "按 Pod 名称删除时查询沙盒列表失败（改用名称解析）: %s: %s",
+            "按 Pod 名称删除时查询容器列表失败（改用名称解析）: %s: %s",
             type(exc).__name__,
             exc,
         )
@@ -1347,12 +1347,12 @@ def _resolve_container_id_from_pod_name(
     pod_name: str,
     known_ids: set[str],
 ) -> Optional[str]:
-    """将 K8s Pod 名称解析为 OpenSandbox 沙盒 ID。
+    """将 K8s Pod 名称解析为 OpenSandbox 容器 ID。
 
-    OpenSandbox 用随机 UUID4 作为沙盒 ID，其 BatchSandbox CR 与 Pod 名称前缀一致，
+    OpenSandbox 用随机 UUID4 作为容器 ID，其 BatchSandbox CR 与 Pod 名称前缀一致，
     Pod 名称形如 `<sandbox-id>-<随机后缀>`（多副本时可能还有索引段）。解析顺序：
-    1. Pod 名称本身即沙盒 ID（已记录或本身为合法 UUID）；
-    2. 与已知沙盒 ID 前缀匹配；
+    1. Pod 名称本身即容器 ID（已记录或本身为合法 UUID）；
+    2. 与已知容器 ID 前缀匹配；
     3. 逐段去掉尾部生成后缀直到得到合法 UUID。
     """
     if pod_name in known_ids:
@@ -1373,7 +1373,7 @@ def _resolve_container_id_from_pod_name(
 
 
 def _is_uuid(value: str) -> bool:
-    """判断字符串是否为合法 UUID（OpenSandbox 沙盒 ID 形态）。"""
+    """判断字符串是否为合法 UUID（OpenSandbox 容器 ID 形态）。"""
     try:
         uuid.UUID(value)
     except (ValueError, AttributeError, TypeError):
@@ -1434,7 +1434,7 @@ def _raise_backend_service_error(operation: str, exc: Exception) -> NoReturn:
             type(exc).__name__,
             exc,
         )
-    raise ExternalDependencyError("后端服务错误") from exc
+    raise ExternalDependencyError("云端沙箱后端依赖错误") from exc
 
 
 def _raise_volume_creation_error(operation: str, exc: Exception) -> NoReturn:
@@ -1444,7 +1444,7 @@ def _raise_volume_creation_error(operation: str, exc: Exception) -> NoReturn:
     if isinstance(exc, FileBrowserConflictError):
         raise VolumePathConflictError("FileBrowser 卷路径已存在或发生冲突") from None
     logger.error("FileBrowser %s失败: %s", operation, type(exc).__name__)
-    raise ExternalDependencyError("FileBrowser 服务错误") from None
+    raise ExternalDependencyError("FileBrowser 依赖错误") from None
 
 
 def _is_image_not_found_error(exc: Exception) -> bool:

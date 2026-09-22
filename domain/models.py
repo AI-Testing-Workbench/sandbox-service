@@ -48,10 +48,10 @@ class ContainerStatus(str, Enum):
 
 
 class ContainerType(str, Enum):
-    """容器类型：同一底层镜像的不同启动方式（v4 §11.1）。
+    """云端沙箱类型：同一底层镜像的不同启动方式（v4 §11.1）。
 
-    - `testagent_cloud`：开发/联调容器（仅 SSH）。
-    - `autotest_cloud`：自动化跑批容器（额外启用 Chrome/VNC，仍可通过 SSH 连入）。
+    - `testagent_cloud`：开发/联调云端沙箱（仅 SSH）。
+    - `autotest_cloud`：自动化跑批云端沙箱（额外启用 Chrome/VNC，仍可通过 SSH 连入）。
     """
 
     TESTAGENT_CLOUD = "testagent_cloud"
@@ -171,7 +171,7 @@ def resolve_container_status(
 ) -> ContainerStatus:
     """根据 Git 初始化结果和 OpenSandbox 状态计算总体容器状态。
 
-    Git 初始化完成前无论沙盒原始状态如何都返回 `pending`；Git 初始化最终失败
+    Git 初始化完成前无论容器原始状态如何都返回 `pending`；Git 初始化最终失败
     返回 `failed`；只有初始化成功后才封装 OpenSandbox 运行状态。
     """
     public_git_status = get_public_git_fin_status(git_fin_status)

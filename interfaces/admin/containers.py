@@ -1,5 +1,5 @@
 """
-管理端容器、孤儿容器、容器日志与数量限制 API。
+管理端云端沙箱、孤儿云端沙箱、云端沙箱日志与数量限制 API。
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ __all__ = [
 
 router = APIRouter(
     prefix="/admin/containers",
-    tags=["管理员 API (容器操作)"],
+    tags=["管理员 API (云端沙箱操作)"],
     dependencies=[Depends(require_admin_access)],
     responses={
         401: {"model": ErrorResponse, "description": "未认证"},
@@ -50,7 +50,7 @@ router = APIRouter(
     responses=api_responses("成功", 200, 400, 409, 502),
 )
 def create_container(request: AdminCreateContainerRequest) -> AdminCreateContainerResponse:
-    """创建并启动容器，包含供管理员使用的完整字段。"""
+    """创建并启动云端沙箱，包含供管理员使用的完整字段。"""
     full_name = (
         image_service.normalize_full_name(request.image)
         if request.image is not None
@@ -84,7 +84,7 @@ def create_container(request: AdminCreateContainerRequest) -> AdminCreateContain
     responses=api_responses("成功", 200, 502),
 )
 def list_containers() -> AdminContainerListResponse:
-    """获取全部容器，包括业务删除容器。"""
+    """获取全部云端沙箱，包括业务删除云端沙箱。"""
     return AdminContainerListResponse(
         containers=[_container_response(row) for row in container_service.list_admin_containers()]
     )
@@ -97,7 +97,7 @@ def list_containers() -> AdminContainerListResponse:
     responses=api_responses("成功", 200),
 )
 def get_container_limit() -> ContainerLimitResponse:
-    """获取容器数量及资源限制配置。"""
+    """获取云端沙箱数量及资源限制配置。"""
     return _limit_response(container_service.get_container_limit())
 
 
@@ -108,7 +108,7 @@ def get_container_limit() -> ContainerLimitResponse:
     responses=api_responses("成功", 200, 400),
 )
 def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitResponse:
-    """设置容器数量及资源限制配置。"""
+    """设置云端沙箱数量及资源限制配置。"""
     return _limit_response(
         container_service.set_container_limit(
             request.container_limit,
@@ -125,7 +125,7 @@ def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitRespons
     responses=api_responses("成功", 200, 502),
 )
 def list_orphan_containers() -> OrphanContainerListResponse:
-    """查询未被记录在数据库中的孤儿容器。"""
+    """查询未被记录在数据库中的孤儿云端沙箱。"""
     return OrphanContainerListResponse(
         container_ids=container_service.list_orphan_container_ids()
     )
@@ -137,12 +137,12 @@ def list_orphan_containers() -> OrphanContainerListResponse:
     responses=api_responses("成功 (无内容)", 204, 400, 502),
 )
 def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
-    """批量删除指定的孤儿容器。"""
+    """批量删除指定的孤儿云端沙箱。"""
     container_service.delete_orphan_containers(request.container_ids)
     return Response(status_code=204)
 
 
-# 按 K8s Pod 名称删除：Pod 名称会被解析回 OpenSandbox 沙盒 ID，再删除 BatchSandbox，
+# 按 K8s Pod 名称删除：Pod 名称会被解析回 OpenSandbox 容器 ID，再删除 BatchSandbox，
 # 因而不会像直接 `kubectl delete pod` 那样被控制器重建。
 @router.post(
     "/k8s/pods/delete",
@@ -150,7 +150,7 @@ def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
     responses=api_responses("成功 (无内容)", 204, 400, 502),
 )
 def delete_k8s_pods(request: PodDeleteRequest) -> Response:
-    """按 kubectl 查询到的 Pod 名称物理删除指定沙盒容器。"""
+    """按 kubectl 查询到的 Pod 名称物理删除指定云端沙箱。"""
     container_service.delete_sandboxes_by_pod_names(request.pod_names)
     return Response(status_code=204)
 
@@ -161,7 +161,7 @@ def delete_k8s_pods(request: PodDeleteRequest) -> Response:
     responses=api_responses("成功", 200, 404, 502),
 )
 def get_container(container_id: str) -> AdminContainerResponse:
-    """查询指定容器运行状态，包括业务删除容器。"""
+    """查询指定云端沙箱运行状态，包括业务删除云端沙箱。"""
     return _container_response(container_service.get_admin_container(container_id))
 
 
@@ -172,7 +172,7 @@ def get_container(container_id: str) -> AdminContainerResponse:
     responses=api_responses("成功", 200, 404, 502),
 )
 def get_container_log(container_id: str) -> PlainTextResponse:
-    """获取指定容器最新日志。"""
+    """获取指定云端沙箱最新日志。"""
     return PlainTextResponse(content=container_service.get_container_logs(container_id))
 
 
@@ -185,7 +185,7 @@ register_container_action_routes(router, operation_id_prefix="admin")
     responses=api_responses("成功 (无内容)", 204, 404, 502),
 )
 def permanent_delete(container_id: str) -> Response:
-    """物理删除指定容器。"""
+    """物理删除指定云端沙箱。"""
     container_service.permanent_delete(container_id)
     return Response(status_code=204)
 
@@ -194,11 +194,11 @@ def permanent_delete(container_id: str) -> Response:
     "/{container_id}/expiration",
     response_model=ExpirationResponse,
     status_code=200,
-    openapi_extra={"requestBody": {"description": "容器过期时间 (小时)。"}},
+    openapi_extra={"requestBody": {"description": "云端沙箱过期时间 (小时)。"}},
     responses=api_responses("成功", 200, 400, 404, 502),
 )
 def set_expiration(container_id: str, request: ExpirationRequest) -> ExpirationResponse:
-    """设置指定容器过期时间，0 表示永不过期。"""
+    """设置指定云端沙箱过期时间，0 表示永不过期。"""
     view = container_service.set_expiration(container_id, request.expiration_hours)
     return ExpirationResponse(container_id=view.container_id, expires_at=view.expires_at)
 
@@ -209,7 +209,7 @@ def set_expiration(container_id: str, request: ExpirationRequest) -> ExpirationR
     responses=api_responses("成功 (无内容)", 204, 400, 404, 409, 502),
 )
 def restore(container_id: str, request: ExpirationRequest) -> Response:
-    """恢复指定业务删除容器。"""
+    """恢复指定业务删除云端沙箱。"""
     container_service.restore(container_id, request.expiration_hours)
     return Response(status_code=204)
 
