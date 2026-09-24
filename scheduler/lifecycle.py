@@ -138,16 +138,15 @@ async def expire_containers() -> list[str]:
 # ---------------------------------------------------------------------------
 async def purge_containers() -> list[str]:
     """`deleted_at + TA_SS_CONTAINER_RETENTION_HOURS` 到期即物理删除
-    （OpenSandbox Delete + 删除 SQLite 记录）。
+    （OpenSandbox Delete + 删除 SQLite 记录）；未到期时也检查远端是否已被外部删除。
 
-    - `retention_hours <= 0` 视为永不物理删除。
+    - `retention_hours <= 0` 时保留仍存在的远端容器，但仍清理已不存在的远端记录。
     - 物理删除前在事务内二次核对 `deleted_at`（若已被管理 API 恢复/清除则跳过），
       并在同一事务内执行外部删除与记录删除，借助 SQLite 写锁与管理 API 恢复互斥，避免竞争。
+    - 状态查询失败时保留本地记录；只有明确的 `SandboxNotFoundError` 才触发缺失清理。
     - 返回本次物理删除的容器 ID 列表。
     """
     retention_hours = settings.container_retention_hours
-    if retention_hours <= 0:
-        return []
     purged: list[str] = []
 
     # 只收集候选 ID；每个候选在生命周期锁内用新事务重新读取。
@@ -168,33 +167,58 @@ async def purge_containers() -> list[str]:
                     continue
                 if current.deleted_at is None:
                     continue
-                try:
-                    deadline = datetime.fromisoformat(current.deleted_at) + timedelta(
-                        hours=retention_hours
-                    )
-                except (TypeError, ValueError):
-                    logger.exception("物理保留时间字段非法，跳过容器: %s", container_id)
-                    continue
-                if deadline > _now():
-                    continue
-                # noinspection broad-exception
-                try:
-                    await _container.get_opensandbox_client().delete(container_id)
-                except SandboxNotFoundError:
-                    # 远端已不存在，仍可安全清理对应卷目录和本地记录。
-                    pass
-                except OpenSandboxError as exc:
-                    # OpenSandbox 适配层已记录底层原因；这里仅保留调度上下文。
-                    logger.error("物理删除失败 (被外部服务删除) %s: %s", container_id, exc)
-                    continue
-                except Exception as exc:  # noqa: BLE001
-                    logger.error(
-                        "物理删除失败 (被外部服务删除) %s: %s: %s",
-                        container_id,
-                        type(exc).__name__,
-                        exc,
-                    )
-                    continue
+                purge_due = False
+                if retention_hours > 0:
+                    try:
+                        deadline = datetime.fromisoformat(current.deleted_at) + timedelta(
+                            hours=retention_hours
+                        )
+                        purge_due = deadline <= _now()
+                    except (TypeError, ValueError):
+                        logger.exception(
+                            "物理保留时间字段非法，仅检查远端是否已不存在: %s",
+                            container_id,
+                        )
+
+                client = _container.get_opensandbox_client()
+                if purge_due:
+                    # noinspection broad-exception
+                    try:
+                        await client.delete(container_id)
+                    except SandboxNotFoundError:
+                        # 远端已不存在，仍可安全清理对应卷目录和本地记录。
+                        pass
+                    except OpenSandboxError as exc:
+                        # OpenSandbox 适配层已记录底层原因；这里仅保留调度上下文。
+                        logger.error("物理删除失败 (被外部服务删除) %s: %s", container_id, exc)
+                        continue
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "物理删除失败 (被外部服务删除) %s: %s: %s",
+                            container_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        continue
+                else:
+                    # 保留期内只核实存在性，不主动删除仍存在的业务删除容器。
+                    try:
+                        await client.get_status(container_id)
+                    except SandboxNotFoundError:
+                        pass
+                    except OpenSandboxError as exc:
+                        logger.error("检查业务删除容器是否存在失败 %s: %s", container_id, exc)
+                        continue
+                    except Exception as exc:  # noqa: BLE001
+                        logger.error(
+                            "检查业务删除容器是否存在失败 %s: %s: %s",
+                            container_id,
+                            type(exc).__name__,
+                            exc,
+                        )
+                        continue
+                    else:
+                        continue
                 await _container.cleanup_volume_for_container(current.user_id, current.service_id)
                 await repo.delete(container_id)
                 _discard_cached_status(container_id)
