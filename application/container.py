@@ -129,6 +129,8 @@ _lifecycle_lock = asyncio.Lock()
 _SOURCE_METADATA_KEY = "testagent-cloud"
 _SOURCE_METADATA_VALUE = "true"
 _CONTAINER_TYPE_METADATA_KEY = "container-type"
+_CONTAINER_START_WAIT_TIMEOUT_SECONDS = 120.0
+_CONTAINER_START_POLL_INTERVAL_SECONDS = 0.25
 #: 镜像内 noVNC/websockify 监听端口（tscode-server 镜像内固定 6080）
 _NOVNC_PORT = 6080
 
@@ -449,7 +451,10 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                 params.container_type,
             )
 
-        git_session = get_git_session_store().create_session(params.user_id)
+        git_session = get_git_session_store().create_session(
+            params.user_id,
+            wait_for_container=True,
+        )
         service_id = git_session.service_id
         if service_id is None:
             raise ExternalDependencyError("创建 Git 初始化会话失败")
@@ -608,6 +613,24 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             )
             raise ExternalDependencyError("保存云端沙箱记录失败") from exc
 
+        try:
+            await _wait_for_container_running(opensandbox_client, container_id)
+            get_git_session_store().mark_container_running(service_id)
+        except Exception as exc:  # noqa: BLE001
+            await _cleanup_created_container(
+                container_id,
+                service_id,
+                prepared_volume_directories,
+                volume_client,
+            )
+            # noinspection broad-exception
+            try:
+                async with session_scope() as session:
+                    await ContainerRepository(session).delete(container_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("容器未能启动且数据库记录清理失败: %s", container_id)
+            _raise_backend_service_error("等待容器运行", exc)
+
         return CreatedContainer(
             container_id=container_id,
             image=image,
@@ -618,6 +641,27 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             status=ContainerStatus.PENDING,
             service_id=service_id,
         )
+
+
+async def _wait_for_container_running(
+    client: "OpenSandboxClient",
+    container_id: str,
+) -> None:
+    """轮询 OpenSandbox，直到新容器真实进入 RUNNING。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _CONTAINER_START_WAIT_TIMEOUT_SECONDS
+    terminal_states = {"FAILED", "PAUSED", "EXITED", "STOPPED", "TERMINATED", "DEAD"}
+    while True:
+        status = await client.get_status(container_id)
+        state = (status.state or "").strip().upper()
+        if state == "RUNNING":
+            return
+        if state in terminal_states:
+            raise RuntimeError(f"容器未能启动，OpenSandbox 状态为 {state}")
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            raise TimeoutError("等待容器进入 RUNNING 状态超时")
+        await asyncio.sleep(min(_CONTAINER_START_POLL_INTERVAL_SECONDS, remaining))
 
 
 async def _cleanup_created_container(

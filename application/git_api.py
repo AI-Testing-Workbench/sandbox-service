@@ -234,7 +234,7 @@ async def get_git_credential(
         if resource.session is not None
         else _final_status(resource.git_fin_status).value
     )
-    if status_value in ("starting", "processing"):
+    if status_value in ("waiting", "starting", "processing"):
         status_value = "credential_required"
     raise GitCredentialConflictError(status_value)
 
@@ -290,7 +290,7 @@ def _validate_transition(session: GitInitializationSession) -> None:
 
 def _final_status(value: Optional[str]) -> GitStatus:
     if value is None:
-        return GitStatus.STARTING
+        return GitStatus.WAITING
     try:
         return GitStatus(value)
     except ValueError as exc:

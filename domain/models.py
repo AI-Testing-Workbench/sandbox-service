@@ -59,8 +59,9 @@ class ContainerType(str, Enum):
 
 
 class GitStatus(str, Enum):
-    """Git 初始化详细状态（Git 凭证设计报告 §2.2）。"""
+    """Git 初始化详细状态；会话从 waiting 开始，运行就绪后才进入 starting。"""
 
+    WAITING = "waiting"
     STARTING = "starting"
     CREDENTIAL_REQUIRED = "credential_required"
     CREDENTIAL_REJECTED = "credential_rejected"
@@ -92,6 +93,7 @@ class GitFinalStatus(str, Enum):
 
 # 中间状态只保存在服务进程内存，不得写入数据库或现有容器状态 API。
 GIT_INTERMEDIATE_STATUSES: tuple[GitStatus, ...] = (
+    GitStatus.WAITING,
     GitStatus.STARTING,
     GitStatus.CREDENTIAL_REQUIRED,
     GitStatus.CREDENTIAL_REJECTED,
