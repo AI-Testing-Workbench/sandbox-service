@@ -35,9 +35,9 @@ router = APIRouter(
     status_code=200,
     responses=api_responses("成功", 200, 409),
 )
-def add_whitelist_user(request: UserIdRequest) -> UserMutationResponse:
+async def add_whitelist_user(request: UserIdRequest) -> UserMutationResponse:
     """新增白名单用户。"""
-    if not whitelist.add_user(request.user_id):
+    if not await whitelist.add_user(request.user_id):
         raise BusinessConflictError("用户已在白名单中")
     return UserMutationResponse(user_id=request.user_id)
 
@@ -47,9 +47,9 @@ def add_whitelist_user(request: UserIdRequest) -> UserMutationResponse:
     response_model=UserIdsResponse,
     responses=api_responses("成功", 200),
 )
-def list_whitelist_users() -> UserIdsResponse:
+async def list_whitelist_users() -> UserIdsResponse:
     """获取白名单用户。"""
-    return UserIdsResponse(user_ids=whitelist.list_users())
+    return UserIdsResponse(user_ids=await whitelist.list_users())
 
 
 @router.post(
@@ -57,9 +57,9 @@ def list_whitelist_users() -> UserIdsResponse:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 404),
 )
-def delete_whitelist_user(request: UserIdRequest) -> Response:
+async def delete_whitelist_user(request: UserIdRequest) -> Response:
     """删除白名单用户。"""
-    whitelist.remove_user(request.user_id)
+    await whitelist.remove_user(request.user_id)
     return Response(status_code=204)
 
 
@@ -70,9 +70,9 @@ def delete_whitelist_user(request: UserIdRequest) -> Response:
     status_code=200,
     responses=api_responses("成功", 200, 409),
 )
-def add_admin_user(request: UserIdRequest) -> UserMutationResponse:
+async def add_admin_user(request: UserIdRequest) -> UserMutationResponse:
     """新增管理员清单用户。"""
-    if not admin_users.add_user(request.user_id):
+    if not await admin_users.add_user(request.user_id):
         raise BusinessConflictError("用户已在管理员清单中")
     return UserMutationResponse(user_id=request.user_id)
 
@@ -82,9 +82,9 @@ def add_admin_user(request: UserIdRequest) -> UserMutationResponse:
     response_model=UserIdsResponse,
     responses=api_responses("成功", 200),
 )
-def list_admin_users() -> UserIdsResponse:
+async def list_admin_users() -> UserIdsResponse:
     """获取管理员清单。"""
-    return UserIdsResponse(user_ids=admin_users.list_users())
+    return UserIdsResponse(user_ids=await admin_users.list_users())
 
 
 @router.post(
@@ -92,7 +92,7 @@ def list_admin_users() -> UserIdsResponse:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 404),
 )
-def delete_admin_user(request: UserIdRequest) -> Response:
+async def delete_admin_user(request: UserIdRequest) -> Response:
     """删除管理员清单用户。"""
-    admin_users.remove_user(request.user_id)
+    await admin_users.remove_user(request.user_id)
     return Response(status_code=204)

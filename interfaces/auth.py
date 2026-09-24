@@ -24,7 +24,7 @@ __all__ = [
 OPERATOR_USER_ID_HEADER = "X-Operator-User-ID"
 
 
-def get_operator_user_id(
+async def get_operator_user_id(
     request: Request,
     operator_user_id: Annotated[
         str | None,

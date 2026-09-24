@@ -54,11 +54,11 @@ __all__ = [
 ]
 
 
-def get_git_state(service_id: str, operator_user_id: Optional[str]) -> GitStatus:
+async def get_git_state(service_id: str, operator_user_id: Optional[str]) -> GitStatus:
     """读取资源的详细 Git 状态。"""
     operator_user_id = _require_operator_user_id(operator_user_id)
     ensure_user_not_blacklisted(operator_user_id)
-    resource = get_git_session_store().resolve_service_resource(
+    resource = await get_git_session_store().resolve_service_resource(
         service_id,
         operator_user_id,
     )
@@ -72,7 +72,7 @@ def get_git_state(service_id: str, operator_user_id: Optional[str]) -> GitStatus
         raise ExternalDependencyError("Git 最终状态数据无效") from exc
 
 
-def report_git_status(
+async def report_git_status(
     service_id: str,
     operator_user_id: Optional[str],
     git_status: str | GitStatus,
@@ -96,11 +96,14 @@ def report_git_status(
 
         store = get_git_session_store()
         if status is GitStatus.STARTING:
-            starting_session = store.prepare_starting_session(service_id, operator_user_id)
+            starting_session = await store.prepare_starting_session(
+                service_id,
+                operator_user_id,
+            )
             current_status = starting_session.git_status.value
             return status
         current_status = "unknown"
-        resource = store.resolve_service_resource(service_id, operator_user_id)
+        resource = await store.resolve_service_resource(service_id, operator_user_id)
         current_status = _resource_status_for_log(resource)
         session = resource.session
         if status in GIT_INTERMEDIATE_STATUSES:
@@ -109,8 +112,12 @@ def report_git_status(
             _validate_transition(session)
             if status is GitStatus.CREDENTIAL_REJECTED:
                 # 认证失败说明用户级凭证已经失效；临时凭证由会话层同步清理。
-                delete_persisted_credential(resource.user_id)
-            updated_session = store.update_status(service_id, operator_user_id, status)
+                await delete_persisted_credential(resource.user_id)
+            updated_session = await store.update_status(
+                service_id,
+                operator_user_id,
+                status,
+            )
             current_status = updated_session.git_status.value
             return status
 
@@ -133,8 +140,10 @@ def report_git_status(
             raise GitSessionEndedError("Git 初始化会话已结束")
 
         try:
-            with session_scope() as db_session:
-                updated, existing_status = ContainerRepository(db_session).set_git_fin_status_if_unset(
+            async with session_scope() as db_session:
+                updated, existing_status = await ContainerRepository(
+                    db_session
+                ).set_git_fin_status_if_unset(
                     resource.container_id,
                     final_status.value,
                 )
@@ -172,7 +181,7 @@ def report_git_status(
         raise
 
 
-def get_git_credential(
+async def get_git_credential(
     service_id: str,
     operator_user_id: Optional[str],
 ) -> GitCredential:
@@ -181,14 +190,14 @@ def get_git_credential(
     ensure_user_not_blacklisted(operator_user_id)
     store = get_git_session_store()
     try:
-        resource = store.resolve_service_resource(service_id, operator_user_id)
+        resource = await store.resolve_service_resource(service_id, operator_user_id)
     except GitSessionEndedError as exc:
         raise GitCredentialConflictError(GitStatus.FAILED_SERVICE.value) from exc
     if resource.git_fin_status is not None and resource.git_fin_status.startswith("failed_"):
         raise GitCredentialConflictError(resource.git_fin_status)
     if resource.session is not None:
         try:
-            return store.claim_temporary_credential(service_id, operator_user_id)
+            return await store.claim_temporary_credential(service_id, operator_user_id)
         except GitCredentialAlreadyClaimedError:
             raise
         except GitSessionEndedError as exc:
@@ -198,7 +207,7 @@ def get_git_credential(
         except GitCredentialUnavailableError:
             pass
 
-    credential = get_persisted_credential(resource.user_id)
+    credential = await get_persisted_credential(resource.user_id)
     if credential is not None:
         return credential
 
@@ -212,7 +221,7 @@ def get_git_credential(
     raise GitCredentialConflictError(status_value)
 
 
-def submit_git_credential(
+async def submit_git_credential(
     service_id: str,
     operator_user_id: Optional[str],
     *,
@@ -223,27 +232,31 @@ def submit_git_credential(
     operator_user_id = _require_operator_user_id(operator_user_id)
     ensure_user_not_blacklisted(operator_user_id)
     store = get_git_session_store()
-    resource = store.resolve_service_resource(service_id, operator_user_id)
+    resource = await store.resolve_service_resource(service_id, operator_user_id)
     if resource.git_fin_status == GitFinalStatus.INITIALIZED.value:
         if not persist:
             raise BusinessConflictError("初始化完成后不允许提交非持久化凭证")
         if not credential.git_password.strip():
             return
-        save_credential(resource.user_id, credential, persist=True)
+        await save_credential(resource.user_id, credential, persist=True)
         return
     if resource.git_fin_status is not None:
         raise BusinessConflictError("Git 初始化已经有最终状态")
     if not credential.git_password.strip():
-        report_git_status(service_id, operator_user_id, GitStatus.FAILED_USER_CANCELLED)
+        await report_git_status(
+            service_id,
+            operator_user_id,
+            GitStatus.FAILED_USER_CANCELLED,
+        )
         return
 
-    stored = save_credential(resource.user_id, credential, persist=persist)
+    stored = await save_credential(resource.user_id, credential, persist=persist)
     if persist:
-        store.mark_credential_available(service_id, operator_user_id)
+        await store.mark_credential_available(service_id, operator_user_id)
     else:
         if stored is None:
             raise ExternalDependencyError("Git 临时凭证保存失败")
-        store.set_temporary_credential(service_id, operator_user_id, stored)
+        await store.set_temporary_credential(service_id, operator_user_id, stored)
 
 
 def _validate_transition(session: GitInitializationSession) -> None:

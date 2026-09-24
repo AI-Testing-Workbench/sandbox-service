@@ -49,14 +49,14 @@ router = APIRouter(
     status_code=200,
     responses=api_responses("成功", 200, 400, 409, 502),
 )
-def create_container(request: AdminCreateContainerRequest) -> AdminCreateContainerResponse:
+async def create_container(request: AdminCreateContainerRequest) -> AdminCreateContainerResponse:
     """创建并启动云端沙箱，包含供管理员使用的完整字段。"""
     full_name = (
         image_service.normalize_full_name(request.image)
         if request.image is not None
         else None
     )
-    created = container_service.create_container(
+    created = await container_service.create_container(
         container_service.CreateContainerParams(
             user_id=request.user_id,
             image=full_name,
@@ -71,7 +71,9 @@ def create_container(request: AdminCreateContainerRequest) -> AdminCreateContain
             memory=request.memory,
         )
     )
-    view = _container_response(container_service.get_admin_container(created.container_id))
+    view = _container_response(
+        await container_service.get_admin_container(created.container_id)
+    )
     return AdminCreateContainerResponse(
         **view.model_dump(exclude={"git_fin_status"}),
         service_id=created.service_id,
@@ -83,10 +85,13 @@ def create_container(request: AdminCreateContainerRequest) -> AdminCreateContain
     response_model=AdminContainerListResponse,
     responses=api_responses("成功", 200, 502),
 )
-def list_containers() -> AdminContainerListResponse:
+async def list_containers() -> AdminContainerListResponse:
     """获取全部云端沙箱，包括业务删除云端沙箱。"""
     return AdminContainerListResponse(
-        containers=[_container_response(row) for row in container_service.list_admin_containers()]
+        containers=[
+            _container_response(row)
+            for row in await container_service.list_admin_containers()
+        ]
     )
 
 
@@ -96,9 +101,9 @@ def list_containers() -> AdminContainerListResponse:
     response_model=ContainerLimitResponse,
     responses=api_responses("成功", 200),
 )
-def get_container_limit() -> ContainerLimitResponse:
+async def get_container_limit() -> ContainerLimitResponse:
     """获取云端沙箱数量及资源限制配置。"""
-    return _limit_response(container_service.get_container_limit())
+    return _limit_response(await container_service.get_container_limit())
 
 
 @router.post(
@@ -107,10 +112,10 @@ def get_container_limit() -> ContainerLimitResponse:
     status_code=200,
     responses=api_responses("成功", 200, 400),
 )
-def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitResponse:
+async def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitResponse:
     """设置云端沙箱数量及资源限制配置。"""
     return _limit_response(
-        container_service.set_container_limit(
+        await container_service.set_container_limit(
             request.container_limit,
             cpu=request.cpu,
             memory=request.memory,
@@ -124,10 +129,10 @@ def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitRespons
     response_model=OrphanContainerListResponse,
     responses=api_responses("成功", 200, 502),
 )
-def list_orphan_containers() -> OrphanContainerListResponse:
+async def list_orphan_containers() -> OrphanContainerListResponse:
     """查询未被记录在数据库中的孤儿云端沙箱。"""
     return OrphanContainerListResponse(
-        container_ids=container_service.list_orphan_container_ids()
+        container_ids=await container_service.list_orphan_container_ids()
     )
 
 
@@ -136,9 +141,9 @@ def list_orphan_containers() -> OrphanContainerListResponse:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 502),
 )
-def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
+async def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
     """批量删除指定的孤儿云端沙箱。"""
-    container_service.delete_orphan_containers(request.container_ids)
+    await container_service.delete_orphan_containers(request.container_ids)
     return Response(status_code=204)
 
 
@@ -149,9 +154,9 @@ def delete_orphan_containers(request: OrphanContainerDeleteRequest) -> Response:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 502),
 )
-def delete_k8s_pods(request: PodDeleteRequest) -> Response:
+async def delete_k8s_pods(request: PodDeleteRequest) -> Response:
     """按 kubectl 查询到的 Pod 名称物理删除指定云端沙箱。"""
-    container_service.delete_sandboxes_by_pod_names(request.pod_names)
+    await container_service.delete_sandboxes_by_pod_names(request.pod_names)
     return Response(status_code=204)
 
 
@@ -160,9 +165,9 @@ def delete_k8s_pods(request: PodDeleteRequest) -> Response:
     response_model=AdminContainerResponse,
     responses=api_responses("成功", 200, 404, 502),
 )
-def get_container(container_id: str) -> AdminContainerResponse:
+async def get_container(container_id: str) -> AdminContainerResponse:
     """查询指定云端沙箱运行状态，包括业务删除云端沙箱。"""
-    return _container_response(container_service.get_admin_container(container_id))
+    return _container_response(await container_service.get_admin_container(container_id))
 
 
 @router.get(
@@ -171,9 +176,9 @@ def get_container(container_id: str) -> AdminContainerResponse:
     response_class=PlainTextResponse,
     responses=api_responses("成功", 200, 404, 502),
 )
-def get_container_log(container_id: str) -> PlainTextResponse:
+async def get_container_log(container_id: str) -> PlainTextResponse:
     """获取指定云端沙箱最新日志。"""
-    return PlainTextResponse(content=container_service.get_container_logs(container_id))
+    return PlainTextResponse(content=await container_service.get_container_logs(container_id))
 
 
 register_container_action_routes(router, operation_id_prefix="admin")
@@ -184,9 +189,9 @@ register_container_action_routes(router, operation_id_prefix="admin")
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 404, 502),
 )
-def permanent_delete(container_id: str) -> Response:
+async def permanent_delete(container_id: str) -> Response:
     """物理删除指定云端沙箱。"""
-    container_service.permanent_delete(container_id)
+    await container_service.permanent_delete(container_id)
     return Response(status_code=204)
 
 
@@ -197,9 +202,9 @@ def permanent_delete(container_id: str) -> Response:
     openapi_extra={"requestBody": {"description": "云端沙箱过期时间 (小时)。"}},
     responses=api_responses("成功", 200, 400, 404, 502),
 )
-def set_expiration(container_id: str, request: ExpirationRequest) -> ExpirationResponse:
+async def set_expiration(container_id: str, request: ExpirationRequest) -> ExpirationResponse:
     """设置指定云端沙箱过期时间，0 表示永不过期。"""
-    view = container_service.set_expiration(container_id, request.expiration_hours)
+    view = await container_service.set_expiration(container_id, request.expiration_hours)
     return ExpirationResponse(container_id=view.container_id, expires_at=view.expires_at)
 
 
@@ -208,9 +213,9 @@ def set_expiration(container_id: str, request: ExpirationRequest) -> ExpirationR
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 404, 409, 502),
 )
-def restore(container_id: str, request: ExpirationRequest) -> Response:
+async def restore(container_id: str, request: ExpirationRequest) -> Response:
     """恢复指定业务删除云端沙箱。"""
-    container_service.restore(container_id, request.expiration_hours)
+    await container_service.restore(container_id, request.expiration_hours)
     return Response(status_code=204)
 
 

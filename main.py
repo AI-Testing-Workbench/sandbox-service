@@ -9,7 +9,6 @@
 
 import logging
 import sys
-import threading
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -17,8 +16,6 @@ from zoneinfo import ZoneInfo
 # noinspection unused-imports
 import config  # noqa: E402  导入即校验 TA_SS_* 环境变量
 from config import Constants, settings  # noqa: E402
-from infra.db import init_db  # noqa: E402
-from scheduler.lifecycle import run_loop  # noqa: E402
 
 
 _LOG_TIMEZONE = ZoneInfo(Constants.TIMEZONE.value)
@@ -51,32 +48,17 @@ def _configure_logging() -> None:
 def main() -> None:
     _configure_logging()
     logger = logging.getLogger("main")
-    logger.info("初始化数据库中...")
-    init_db()
-
-    stop_event = threading.Event()
-    scheduler_thread = threading.Thread(
-        target=run_loop, args=(stop_event,), daemon=True, name="scheduler"
-    )
-    scheduler_thread.start()
-    logger.info("调度服务已启动 (调度周期 %ss)", settings.scheduler_poll_interval_seconds)
-
     logger.info("REST API 启动于: http://127.0.0.1:%s", settings.rest_api_port)
     import uvicorn
 
     from interfaces.app import create_app  # noqa: PLC0415
 
-    try:
-        uvicorn.run(
-            create_app(),
-            host="0.0.0.0",
-            port=settings.rest_api_port,
-            log_level=settings.log_level.lower(),
-        )
-    finally:
-        stop_event.set()
-        scheduler_thread.join(timeout=max(1, settings.scheduler_poll_interval_seconds + 1))
-        logger.info("调度服务已停止")
+    uvicorn.run(
+        create_app(),
+        host="0.0.0.0",
+        port=settings.rest_api_port,
+        log_level=settings.log_level.lower(),
+    )
 
 
 if __name__ == "__main__":

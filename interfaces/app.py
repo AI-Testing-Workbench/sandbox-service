@@ -10,9 +10,11 @@ REST API 应用装配（v4 §14）。
 from __future__ import annotations
 
 import base64
+import asyncio
 import logging
 import re
 import secrets
+from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -22,6 +24,7 @@ from fastapi.responses import JSONResponse
 
 from config import settings
 from domain.errors import AppError
+from infra.db import dispose_db, init_db
 from interfaces.admin.containers import router as admin_container_router
 from interfaces.admin.images import router as admin_image_router
 from interfaces.admin.state import router as admin_state_router
@@ -30,6 +33,7 @@ from interfaces.git import router as git_router
 from interfaces.user.containers import router as user_container_router
 from interfaces.user.users import router as user_user_router
 from interfaces.volume import router as volume_router
+from scheduler.lifecycle import run_loop
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +49,26 @@ _INTERNAL_REFERENCE_PATTERN = re.compile(
 
 def create_app() -> FastAPI:
     """构建 FastAPI 应用（REST 业务端点 + 错误映射 + 文档登录保护）。"""
-    app = FastAPI(title="TestAgent Cloud 云端沙箱", version="1.0.0")
+    @asynccontextmanager
+    async def lifespan(apps: FastAPI):
+        _ = apps
+        await init_db()
+        scheduler_task = asyncio.create_task(run_loop(), name="sandbox-scheduler")
+        try:
+            yield
+        finally:
+            scheduler_task.cancel()
+            try:
+                await scheduler_task
+            except asyncio.CancelledError:
+                pass
+            await dispose_db()
+
+    app = FastAPI(
+        title="TestAgent Cloud 云端沙箱",
+        version="1.0.0",
+        lifespan=lifespan,
+    )
     app.include_router(user_container_router)
     app.include_router(user_user_router)
     app.include_router(admin_image_router)

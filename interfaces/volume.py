@@ -60,7 +60,7 @@ router = APIRouter(
     response_model=VolumeStatusResponse,
     responses=api_responses("成功", 200),
 )
-def get_volume_status() -> VolumeStatusResponse:
+async def get_volume_status() -> VolumeStatusResponse:
     """返回卷配置。"""
     if not settings.filebrowser_enabled:
         return VolumeStatusResponse(enabled=False)

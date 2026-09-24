@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import shutil
 import tempfile
@@ -49,7 +50,7 @@ router = APIRouter(
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 502),
 )
-def upload_image(
+async def upload_image(
     file: UploadFile = File(..., description="镜像归档文件，仅支持 .tar 或 .tar.gz"),
     registry: Optional[str] = Form(
         default=settings.image_default_registry,
@@ -65,9 +66,9 @@ def upload_image(
     ),
 ) -> Response:
     """上传镜像文件。"""
-    temp_path = _save_upload(file)
+    temp_path = await asyncio.to_thread(_save_upload, file)
     try:
-        image_service.upload_image(
+        await image_service.upload_image(
             temp_path,
             registry=registry,
             namespace=namespace,
@@ -77,7 +78,7 @@ def upload_image(
     finally:
         # 应用层负责正常流程清理，这里覆盖保存后调用失败等边界。
         try:
-            Path(temp_path).unlink(missing_ok=True)
+            await asyncio.to_thread(Path(temp_path).unlink, missing_ok=True)
         except OSError:
             pass
 
@@ -87,9 +88,9 @@ def upload_image(
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 502),
 )
-def push_image(request: ImageReferenceRequest) -> Response:
+async def push_image(request: ImageReferenceRequest) -> Response:
     """推送指定镜像至注册表。"""
-    image_service.push_image(request.full_name)
+    await image_service.push_image(request.full_name)
     return Response(status_code=204)
 
 
@@ -98,9 +99,9 @@ def push_image(request: ImageReferenceRequest) -> Response:
     response_model=ImageListResponse,
     responses=api_responses("成功", 200, 502),
 )
-def list_images() -> ImageListResponse:
+async def list_images() -> ImageListResponse:
     """获取本地镜像清单（不自动探测推送状态，避免慢 Registry 拖慢列表）。"""
-    rows = image_service.list_images()
+    rows = await image_service.list_images()
     return ImageListResponse(images=[_image_item(row) for row in rows])
 
 
@@ -109,9 +110,9 @@ def list_images() -> ImageListResponse:
     response_model=ImageListResponse,
     responses=api_responses("成功", 200, 502),
 )
-def check_image_push_states() -> ImageListResponse:
+async def check_image_push_states() -> ImageListResponse:
     """手动全量刷新镜像推送状态（对 Registry 逐个探测，管理员显式触发）。"""
-    rows = image_service.check_image_push_states()
+    rows = await image_service.check_image_push_states()
     return ImageListResponse(images=[_image_item(row) for row in rows])
 
 
@@ -120,9 +121,9 @@ def check_image_push_states() -> ImageListResponse:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 409, 502),
 )
-def delete_image(request: ImageDeleteRequest) -> Response:
+async def delete_image(request: ImageDeleteRequest) -> Response:
     """删除指定镜像。"""
-    result = image_service.delete_image(request.full_name, request.also_registry)
+    result = await image_service.delete_image(request.full_name, request.also_registry)
     headers = {"X-Registry-Delete-Failed": "true"} if result.registry_failed else None
     return Response(status_code=204, headers=headers)
 
@@ -132,9 +133,9 @@ def delete_image(request: ImageDeleteRequest) -> Response:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 409, 502),
 )
-def set_default_image(request: SetDefaultImageRequest) -> Response:
+async def set_default_image(request: SetDefaultImageRequest) -> Response:
     """设置指定云端沙箱类型的默认镜像。"""
-    image_service.set_default_image(request.full_name, request.type)
+    await image_service.set_default_image(request.full_name, request.type)
     return Response(status_code=204)
 
 
@@ -143,14 +144,14 @@ def set_default_image(request: SetDefaultImageRequest) -> Response:
     status_code=204,
     responses=api_responses("成功 (无内容)", 204),
 )
-def unset_default_image(
+async def unset_default_image(
     container_type: ContainerType = Query(
         default=ContainerType.TESTAGENT_CLOUD,
         description="云端沙箱类型：testagent_cloud / autotest_cloud",
     ),
 ) -> Response:
     """取消设置指定云端沙箱类型的默认镜像。"""
-    image_service.unset_default_image(container_type)
+    await image_service.unset_default_image(container_type)
     return Response(status_code=204)
 
 
@@ -159,7 +160,7 @@ def unset_default_image(
     response_model=DefaultImageResponse,
     responses=api_responses("成功", 200),
 )
-def get_default_image(
+async def get_default_image(
     container_type: ContainerType = Query(
         default=ContainerType.TESTAGENT_CLOUD,
         description="云端沙箱类型：testagent_cloud / autotest_cloud",
@@ -168,7 +169,7 @@ def get_default_image(
     """获取指定云端沙箱类型的默认镜像。"""
     return DefaultImageResponse(
         type=container_type.value,
-        full_name=image_service.get_default_image(container_type),
+        full_name=await image_service.get_default_image(container_type),
     )
 
 

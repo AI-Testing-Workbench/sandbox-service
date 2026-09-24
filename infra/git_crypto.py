@@ -19,7 +19,7 @@ from typing import Optional
 from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import Constants
 from infra.orm import GitCredentialRow
@@ -139,8 +139,8 @@ def load_git_credentials_cipher(
     )
 
 
-def initialize_git_credential_crypto(
-    session: Session,
+async def initialize_git_credential_crypto(
+    session: AsyncSession,
     *,
     key_path: Optional[str | Path] = None,
 ) -> GitCredentialCipher:
@@ -151,13 +151,16 @@ def initialize_git_credential_crypto(
     """
     cipher = load_git_credentials_cipher(key_path)
     settings_repo = SettingsRepository(session)
-    plaintext_row = settings_repo.get(GIT_CRYPTO_TEST_PLAINTEXT_KEY)
-    ciphertext_row = settings_repo.get(GIT_CRYPTO_TEST_CIPHERTEXT_KEY)
+    plaintext_row = await settings_repo.get(GIT_CRYPTO_TEST_PLAINTEXT_KEY)
+    ciphertext_row = await settings_repo.get(GIT_CRYPTO_TEST_CIPHERTEXT_KEY)
 
     if plaintext_row is None and ciphertext_row is None:
         plaintext = secrets.token_urlsafe(_TEST_PLAINTEXT_SIZE_BYTES)
-        settings_repo.set(GIT_CRYPTO_TEST_PLAINTEXT_KEY, plaintext)
-        settings_repo.set(GIT_CRYPTO_TEST_CIPHERTEXT_KEY, cipher.encrypt(plaintext))
+        await settings_repo.set(GIT_CRYPTO_TEST_PLAINTEXT_KEY, plaintext)
+        await settings_repo.set(
+            GIT_CRYPTO_TEST_CIPHERTEXT_KEY,
+            cipher.encrypt(plaintext),
+        )
     elif plaintext_row is None or ciphertext_row is None:
         raise GitCryptoError("Git 凭证密钥校验数据不完整")
     else:
@@ -170,9 +173,10 @@ def initialize_git_credential_crypto(
         if decrypted.encode("utf-8") != plaintext_row.value.encode("utf-8"):
             raise GitCryptoError("Git 凭证密钥自检失败")
 
-    for encrypted_password in session.scalars(
+    encrypted_passwords = await session.scalars(
         select(GitCredentialRow.git_password)
-    ):
+    )
+    for encrypted_password in encrypted_passwords:
         try:
             cipher.decrypt(encrypted_password)
         except GitCryptoError as exc:

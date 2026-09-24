@@ -92,10 +92,10 @@ router = APIRouter(
     response_model=GitStateResponse,
     responses=api_responses("成功", 200, 401, 404, 409),
 )
-def get_git_state(service_id: str, operator_user_id: OperatorUserId) -> GitStateResponse:
+async def get_git_state(service_id: str, operator_user_id: OperatorUserId) -> GitStateResponse:
     """获取 Git 详细状态。"""
     return GitStateResponse(
-        git_status=git_service.get_git_state(service_id, operator_user_id)
+        git_status=await git_service.get_git_state(service_id, operator_user_id)
     )
 
 
@@ -105,14 +105,14 @@ def get_git_state(service_id: str, operator_user_id: OperatorUserId) -> GitState
     status_code=200,
     responses=api_responses("成功", 200, 400, 401, 404, 409, 502),
 )
-def report_git_state(
+async def report_git_state(
     service_id: str,
     request: GitReportRequest,
     operator_user_id: OperatorUserId,
 ) -> GitReportResponse:
     """统一接收 Git 中间状态和最终状态。"""
     return GitReportResponse(
-        git_status=git_service.report_git_status(
+        git_status=await git_service.report_git_status(
             service_id,
             operator_user_id,
             request.git_status,
@@ -131,12 +131,12 @@ def report_git_state(
         },
     },
 )
-def get_git_credential(
+async def get_git_credential(
     service_id: str,
     operator_user_id: OperatorUserId,
 ) -> GitCredentialResponse:
     """领取当前授权资源的 Git 凭证。"""
-    credential = git_service.get_git_credential(service_id, operator_user_id)
+    credential = await git_service.get_git_credential(service_id, operator_user_id)
     return GitCredentialResponse(
         type=cast(Literal["password"], credential.type),
         git_username=credential.git_username,
@@ -151,13 +151,13 @@ def get_git_credential(
     response_model=None,
     responses=api_responses("成功 (无内容)", 204, 400, 401, 404, 409, 502),
 )
-def submit_git_credential(
+async def submit_git_credential(
     service_id: str,
     request: GitCredentialSubmitRequest,
     operator_user_id: OperatorUserId,
 ) -> Response:
     """提交 Git 凭证；响应不返回密码。"""
-    git_service.submit_git_credential(
+    await git_service.submit_git_credential(
         service_id,
         operator_user_id,
         credential=GitCredential(

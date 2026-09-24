@@ -17,6 +17,7 @@ from alembic import command
 # noinspection package-requirements
 from alembic.config import Config
 from sqlalchemy import Engine, text
+from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.engine import Connection
 
 from config import Constants
@@ -34,8 +35,7 @@ _migration_lock = Lock()
 
 def _alembic_config(engine: Engine) -> Config:
     config = Config(str(_ALEMBIC_INI))
-    # Always use the same URL as the application engine, not a value copied from
-    # an environment-specific alembic.ini file.
+    # Use the dedicated synchronous migration URL, not alembic.ini's environment URL.
     config.set_main_option("script_location", str(_MIGRATIONS_PATH))
     config.set_main_option("prepend_sys_path", str(_PROJECT_ROOT))
     config.set_main_option("sqlalchemy.url", engine.url.render_as_string(hide_password=False))
@@ -47,8 +47,8 @@ def upgrade_database(engine: Engine) -> None:
     with _migration_lock:
         with engine.begin() as connection:
             config = _alembic_config(engine)
-            # Reuse the application connection. This also keeps SQLite in-memory
-            # databases usable in tests and makes version synchronization atomic.
+            # Reuse the migration connection so in-memory SQLite works and version
+            # synchronization remains atomic.
             config.attributes["connection"] = connection
             command.upgrade(config, "head")
             _synchronize_schema_version(connection)
@@ -79,14 +79,16 @@ def _synchronize_schema_version(connection: Connection) -> None:
 
 
 # noinspection SqlDialectInspection
-def get_schema_version(engine: Engine) -> int:
-    """读取 `schema_version` 中的 INTEGER 版本值。"""
-    with engine.connect() as connection:
+async def get_schema_version(engine: AsyncEngine) -> int:
+    """使用异步运行时引擎读取 `schema_version` 中的 INTEGER 版本值。"""
+    async with engine.connect() as connection:
         # noinspection unnecessary-cast
         value = cast(
             int | str | None,
-            connection.execute(
-                text("SELECT version FROM schema_version WHERE id = 1")
+            (
+                await connection.execute(
+                    text("SELECT version FROM schema_version WHERE id = 1")
+                )
             ).scalar_one_or_none(),
         )
     if value is None:

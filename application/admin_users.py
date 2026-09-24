@@ -21,37 +21,41 @@ __all__ = [
 ]
 
 
-def add_user(user_id: str) -> bool:
+async def add_user(user_id: str) -> bool:
     """新增管理员用户；已存在（含本事务待提交）返回 False。"""
     _validate(user_id)
     ensure_user_not_blacklisted(user_id)
-    with session_scope() as session:
-        return AdminUserRepository(session).add(user_id)
+    async with session_scope() as session:
+        repo = AdminUserRepository(session)
+        if await repo.exists(user_id):
+            return False
+        return repo.add(user_id)
 
 
-def remove_user(user_id: str) -> None:
+async def remove_user(user_id: str) -> None:
     """删除管理员用户；用户不存在时抛出 404。"""
     _validate(user_id)
     ensure_user_not_blacklisted(user_id)
-    with session_scope() as session:
+    async with session_scope() as session:
         repo = AdminUserRepository(session)
-        if not repo.exists(user_id):
+        if not await repo.exists(user_id):
             raise UserNotFoundError("用户不存在")
-        repo.delete(user_id)
+        await repo.delete(user_id)
 
 
-def list_users() -> list[str]:
+async def list_users() -> list[str]:
     """列出全部管理员用户 ID。"""
-    with session_scope() as session:
-        return [row.user_id for row in AdminUserRepository(session).list_all()]
+    async with session_scope() as session:
+        rows = await AdminUserRepository(session).list_all()
+        return [row.user_id for row in rows]
 
 
-def is_admin(user_id: str) -> bool:
+async def is_admin(user_id: str) -> bool:
     """判断用户是否在管理员清单中。"""
     _validate(user_id)
     ensure_user_not_blacklisted(user_id)
-    with session_scope() as session:
-        return AdminUserRepository(session).exists(user_id)
+    async with session_scope() as session:
+        return await AdminUserRepository(session).exists(user_id)
 
 
 def _validate(user_id: str) -> None:

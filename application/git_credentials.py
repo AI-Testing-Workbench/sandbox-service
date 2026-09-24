@@ -49,7 +49,7 @@ def validate_credential(user_id: str, credential: GitCredential) -> None:
     _require_text(credential.git_password, "git_password")
 
 
-def save_credential(
+async def save_credential(
     user_id: str,
     credential: GitCredential,
     *,
@@ -66,9 +66,9 @@ def save_credential(
     if not persist:
         return credential
 
-    with session_scope() as session:
-        cipher = initialize_git_credential_crypto(session)
-        GitCredentialRepository(session).upsert(
+    async with session_scope() as session:
+        cipher = await initialize_git_credential_crypto(session)
+        await GitCredentialRepository(session).upsert(
             GitCredentialRow(
                 user_id=user_id,
                 type=credential.type,
@@ -80,7 +80,7 @@ def save_credential(
     return None
 
 
-def get_persisted_credential(user_id: str) -> GitCredential | None:
+async def get_persisted_credential(user_id: str) -> GitCredential | None:
     """读取并解密用户级凭证。
 
     调用方必须先完成 Git 资源与请求用户的绑定校验；本函数不承担 HTTP 授权。
@@ -88,12 +88,12 @@ def get_persisted_credential(user_id: str) -> GitCredential | None:
     if not isinstance(user_id, str) or not user_id.strip():
         raise InvalidArgumentError("用户 ID 不能为空")
 
-    with session_scope() as session:
+    async with session_scope() as session:
         repository = GitCredentialRepository(session)
-        row = repository.get(user_id)
+        row = await repository.get(user_id)
         if row is None:
             return None
-        cipher = initialize_git_credential_crypto(session)
+        cipher = await initialize_git_credential_crypto(session)
         try:
             password = cipher.decrypt(row.git_password)
         except GitCryptoError as exc:
@@ -107,13 +107,13 @@ def get_persisted_credential(user_id: str) -> GitCredential | None:
         )
 
 
-def delete_persisted_credential(user_id: str) -> None:
+async def delete_persisted_credential(user_id: str) -> None:
     """删除用户级持久化凭证；不存在时保持幂等。"""
     if not isinstance(user_id, str) or not user_id.strip():
         raise InvalidArgumentError("用户 ID 不能为空")
 
-    with session_scope() as session:
-        GitCredentialRepository(session).delete(user_id)
+    async with session_scope() as session:
+        await GitCredentialRepository(session).delete(user_id)
 
 
 def _require_text(value: str, field_name: str) -> None:

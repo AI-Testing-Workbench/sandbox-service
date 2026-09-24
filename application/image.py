@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
@@ -264,7 +265,7 @@ def _same_reference(left: str, right: Optional[str]) -> bool:
 _PUSHED_CHECK_TIMEOUT_S = 3.0
 
 
-def list_images() -> list[ImageRow]:
+async def list_images() -> list[ImageRow]:
     """列出本地 Docker 镜像（v4 §10.1 / §10.4）。
 
     - 一行 = 一个 RepoTag；无 RepoTag 的镜像（悬空镜像）跳过。
@@ -272,37 +273,51 @@ def list_images() -> list[ImageRow]:
     - 已推送状态默认不联网探测（避免慢 Registry 拖垮列表），仅标记默认镜像；
       需要真实推送状态时由管理员手动触发 `check_image_push_states()`。
     """
-    return _collect_image_rows(check_pushed=False)
+    return await _collect_image_rows(check_pushed=False)
 
 
-def check_image_push_states() -> list[ImageRow]:
+async def check_image_push_states() -> list[ImageRow]:
     """手动全量刷新镜像推送状态（仅由管理员显式触发）。
 
     - 逐行对 Registry 探测已推送状态，`DEFAULT` 状态按容器类型默认镜像匹配。
     - 同一 Registry 首次探测失败即短路（按未推送处理），避免 N 个不可达镜像
       × 超时 串行拖垮检查请求。
     """
-    return _collect_image_rows(check_pushed=True)
+    return await _collect_image_rows(check_pushed=True)
 
 
-def _collect_image_rows(check_pushed: bool) -> list[ImageRow]:
+async def _collect_image_rows(check_pushed: bool) -> list[ImageRow]:
     try:
-        local_images = _docker().list_images()
+        local_images = await asyncio.to_thread(_list_local_images)
     except Exception as exc:
         raise ExternalDependencyError("获取本地 Docker 镜像列表失败") from exc
 
-    default_refs = [_cfg_get_default_image(container_type) for container_type in ContainerType]
+    default_refs: list[Optional[str]] = list(
+        await asyncio.gather(
+            *(
+                _cfg_get_default_image(container_type)
+                for container_type in ContainerType
+            )
+        )
+    )
     rows: list[ImageRow] = []
     seen_full_names: set[str] = set()
     #: 本次请求内已探测到不可达的 Registry；同一 Registry 的后续镜像按未推送处理，
     #: 避免 N 个外部镜像 × 超时 串行拖垮检查（检查仅由管理员手动触发）。
     registry_unavailable: set[str] = set()
     for local in local_images:
-        _append_local_rows(rows, local, default_refs, seen_full_names, registry_unavailable, check_pushed)
+        await _append_local_rows(
+            rows,
+            local,
+            default_refs,
+            seen_full_names,
+            registry_unavailable,
+            check_pushed,
+        )
     return rows
 
 
-def _append_local_rows(
+async def _append_local_rows(
     rows: list[ImageRow],
     local: LocalImage,
     default_refs: list[Optional[str]],
@@ -316,7 +331,7 @@ def _append_local_rows(
         if full_name in seen_full_names:
             continue
         seen_full_names.add(full_name)
-        pushed = _is_pushed(full_name, registry_unavailable) if check_pushed else False
+        pushed = await _is_pushed(full_name, registry_unavailable) if check_pushed else False
         is_default = any(
             _same_reference(full_name, default_ref)
             for default_ref in default_refs
@@ -337,13 +352,14 @@ def _append_local_rows(
         )
 
 
-def _is_pushed(full_name: str, registry_unavailable: set[str]) -> bool:
+async def _is_pushed(full_name: str, registry_unavailable: set[str]) -> bool:
     registry, namespace, name, tag = _parse_ref(full_name)
     if not registry or registry in registry_unavailable:
         return False
     # noinspection broad-exception
     try:
-        return _registry().check_image_pushed(
+        return await asyncio.to_thread(
+            _registry().check_image_pushed,
             registry,
             namespace,
             name,
@@ -361,7 +377,7 @@ def _is_pushed(full_name: str, registry_unavailable: set[str]) -> bool:
 # ---------------------------------------------------------------------------
 # 上传（load）
 # ---------------------------------------------------------------------------
-def upload_image(
+async def upload_image(
     file_path: str,
     registry: Optional[str] = None,
     namespace: Optional[str] = None,
@@ -383,8 +399,7 @@ def upload_image(
             suffix = Path(file_path).suffix.lower()
             raise InvalidArgumentError(f"不支持的镜像文件类型: {suffix or '(无扩展名)'}")
 
-        with open(file_path, "rb") as stream:
-            loaded_tags = _docker().load_image(stream)
+        loaded_tags = await asyncio.to_thread(_load_image_file, file_path)
 
         host = _strip_scheme(registry or "") or _registry_host()
         target_namespace = (namespace or "").strip().strip("/") or _default_namespace()
@@ -409,16 +424,16 @@ def upload_image(
                 target,
             )
             if source_ref != target:
-                _docker().tag_image(source_ref, target)
+                await asyncio.to_thread(_tag_image, source_ref, target)
             for source in sources:
                 if source != target:
-                    _docker().remove_image(source)
+                    await asyncio.to_thread(_remove_image, source)
 
         pushed_refs: list[str] = []
         if auto_push:
             for target in target_refs:
                 try:
-                    _docker().push_image(target)
+                    await asyncio.to_thread(_push_image, target)
                     pushed_refs.append(target)
                 except Exception as exc:
                     raise ExternalDependencyError(f"镜像推送失败: {target}") from exc
@@ -429,9 +444,30 @@ def upload_image(
     except Exception as exc:
         raise ExternalDependencyError("镜像导入到本地 Docker 失败") from exc
     finally:
-        _remove_temp(file_path)
+        await asyncio.to_thread(_remove_temp, file_path)
 
     return UploadResult(loaded_tags=loaded_tags, target_refs=target_refs, pushed_refs=pushed_refs)
+
+
+def _load_image_file(file_path: str) -> list[str]:
+    with open(file_path, "rb") as stream:
+        return _docker().load_image(stream)
+
+
+def _list_local_images() -> list[LocalImage]:
+    return _docker().list_images()
+
+
+def _tag_image(source: str, target: str) -> None:
+    _docker().tag_image(source, target)
+
+
+def _remove_image(image_ref: str) -> None:
+    _docker().remove_image(image_ref)
+
+
+def _push_image(image_ref: str) -> None:
+    _docker().push_image(image_ref)
 
 
 def _remove_temp(path: str) -> None:
@@ -445,12 +481,12 @@ def _remove_temp(path: str) -> None:
 # ---------------------------------------------------------------------------
 # 推送（Push）
 # ---------------------------------------------------------------------------
-def push_image(full_name: str, tag: Optional[str] = None) -> str:
+async def push_image(full_name: str, tag: Optional[str] = None) -> str:
     """推送完整目标引用；不做 Registry 预验证并返回规范化引用。"""
     # 保留旧应用层调用 push_image(name, tag) 的本地兼容形式；新 API 只传 full_name。
     target = _standard_ref(full_name, tag) if tag is not None else normalize_full_name(full_name)
     try:
-        _docker().push_image(target)
+        await asyncio.to_thread(_push_image, target)
     except Exception as exc:
         raise ExternalDependencyError(f"镜像推送失败: {target}") from exc
     return target
@@ -459,14 +495,14 @@ def push_image(full_name: str, tag: Optional[str] = None) -> str:
 # ---------------------------------------------------------------------------
 # 默认镜像管理（按容器类型分开；testagent_cloud 沿用历史 settings key）
 # ---------------------------------------------------------------------------
-def get_default_image(
+async def get_default_image(
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
 ) -> Optional[str]:
     """返回指定容器类型的默认镜像完整引用；未配置返回 None（v4 §10.5）。"""
-    return _cfg_get_default_image(container_type)
+    return await _cfg_get_default_image(container_type)
 
 
-def set_default_image(
+async def set_default_image(
     full_ref: str,
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
 ) -> str:
@@ -474,33 +510,41 @@ def set_default_image(
     canonical = normalize_full_name(full_ref)
     registry, namespace, name, tag = _parse_ref(canonical)
     try:
-        pushed = _registry().check_image_pushed(registry, namespace, name, tag)
+        pushed = await asyncio.to_thread(
+            _registry().check_image_pushed,
+            registry,
+            namespace,
+            name,
+            tag,
+        )
     except Exception as exc:
         raise ExternalDependencyError("校验默认镜像已推送状态失败 (Registry 服务异常)") from exc
     if not pushed:
         raise BusinessConflictError("仅已推送的镜像可设为默认镜像")
-    _cfg_set_default_image(canonical, container_type)
+    await _cfg_set_default_image(canonical, container_type)
     return canonical
 
 
-def unset_default_image(
+async def unset_default_image(
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
 ) -> None:
     """取消指定容器类型的默认镜像（v4 §10.5）。"""
-    _cfg_set_default_image(None, container_type)
+    await _cfg_set_default_image(None, container_type)
 
 
 # ---------------------------------------------------------------------------
 # 删除（本地 + 可选 Registry）
 # ---------------------------------------------------------------------------
-def delete_image(full_ref: str, also_registry: bool = True) -> DeleteResult:
+async def delete_image(full_ref: str, also_registry: bool = True) -> DeleteResult:
     """镜像删除（v4 §10.6）：本地 rmi + 可选 Registry 同步删除，非事务。
 
     - 本地成功而 Registry 失败：保持本地删除结果并提示（`registry_failed=True`），不回滚。
     - Registry 删除失败不抛错（由调用方提示）；本地失败抛 `ExternalDependencyError`。
     """
     docker_ref = _canonical_reference(full_ref)
-    default_refs = [_cfg_get_default_image(container_type) for container_type in ContainerType]
+    default_refs = await asyncio.gather(
+        *(_cfg_get_default_image(container_type) for container_type in ContainerType)
+    )
     if any(
         _same_reference(docker_ref, default_ref)
         for default_ref in default_refs
@@ -508,7 +552,7 @@ def delete_image(full_ref: str, also_registry: bool = True) -> DeleteResult:
         raise BusinessConflictError("默认镜像不可删除")
     registry, namespace, name, tag = _parse_ref(docker_ref)
     try:
-        _docker().remove_image(docker_ref)
+        await asyncio.to_thread(_remove_image, docker_ref)
     except Exception as exc:
         raise ExternalDependencyError(f"删除本地镜像失败: {full_ref}") from exc
 
@@ -525,7 +569,13 @@ def delete_image(full_ref: str, also_registry: bool = True) -> DeleteResult:
 
     # noinspection broad-exception
     try:
-        succeeded = _registry().delete_image(registry, namespace, name, tag)
+        succeeded = await asyncio.to_thread(
+            _registry().delete_image,
+            registry,
+            namespace,
+            name,
+            tag,
+        )
         if succeeded:
             result = DeleteResult(local_deleted=True, registry_deleted=True, registry_failed=False)
         else:

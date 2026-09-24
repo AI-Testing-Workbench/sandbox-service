@@ -16,11 +16,11 @@ from __future__ import annotations
 import logging
 import math
 import os
-from contextlib import contextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Iterator, Literal, Optional, cast
+from typing import AsyncIterator, Literal, Optional, cast
 from urllib.parse import urlsplit, urlunsplit
 
 from domain.models import ContainerType
@@ -408,44 +408,44 @@ def _default_image_settings_key(container_type: ContainerType) -> str:
     return _DEFAULT_IMAGE_SETTINGS_KEYS[container_type]
 
 
-@contextmanager
-def _settings_scope() -> Iterator:
+@asynccontextmanager
+async def _settings_scope() -> AsyncIterator:
     from infra.db import session_scope
     from infra.repositories import SettingsRepository
 
-    with session_scope() as session:
+    async with session_scope() as session:
         yield SettingsRepository(session)
 
 
-def get_default_image(
+async def get_default_image(
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
 ) -> Optional[str]:
     """读取指定容器类型的默认镜像完整引用；未设置返回 None。
 
     `container_type` 缺省为 `testagent_cloud`，历史 key 行为保持不变。
     """
-    with _settings_scope() as repo:
-        row = repo.get(_default_image_settings_key(container_type))
+    async with _settings_scope() as repo:
+        row = await repo.get(_default_image_settings_key(container_type))
     return row.value if row is not None else None
 
 
-def set_default_image(
+async def set_default_image(
     value: Optional[str],
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
 ) -> None:
     """设置指定容器类型的默认镜像完整引用；传 None 表示取消默认。"""
     key = _default_image_settings_key(container_type)
-    with _settings_scope() as repo:
+    async with _settings_scope() as repo:
         if value is None:
-            repo.delete(key)
+            await repo.delete(key)
         else:
-            repo.set(key, value)
+            await repo.set(key, value)
 
 
-def get_container_count_limit() -> int:
+async def get_container_count_limit() -> int:
     """读取容器数量限制；数据库未设置时返回 `TA_SS_CONTAINER_DEFAULT_COUNT_LIMIT`。"""
-    with _settings_scope() as repo:
-        row = repo.get(SETTINGS_KEY_CONTAINER_COUNT_LIMIT)
+    async with _settings_scope() as repo:
+        row = await repo.get(SETTINGS_KEY_CONTAINER_COUNT_LIMIT)
     if row is None:
         return settings.container_default_count_limit
     try:
@@ -454,17 +454,17 @@ def get_container_count_limit() -> int:
         raise ConfigError(f"数据库中的容器数量限制非法: {row.value!r}")
 
 
-def set_container_count_limit(value: int) -> None:
+async def set_container_count_limit(value: int) -> None:
     """设置容器数量限制。"""
-    with _settings_scope() as repo:
-        repo.set(SETTINGS_KEY_CONTAINER_COUNT_LIMIT, str(int(value)))
+    async with _settings_scope() as repo:
+        await repo.set(SETTINGS_KEY_CONTAINER_COUNT_LIMIT, str(int(value)))
 
 
-def get_container_resource_limits() -> tuple[float, int]:
+async def get_container_resource_limits() -> tuple[float, int]:
     """读取容器 CPU/内存限制；数据库未设置时返回环境变量默认值。"""
-    with _settings_scope() as repo:
-        cpu_row = repo.get(SETTINGS_KEY_CONTAINER_CPU_LIMIT)
-        memory_row = repo.get(SETTINGS_KEY_CONTAINER_MEMORY_LIMIT)
+    async with _settings_scope() as repo:
+        cpu_row = await repo.get(SETTINGS_KEY_CONTAINER_CPU_LIMIT)
+        memory_row = await repo.get(SETTINGS_KEY_CONTAINER_MEMORY_LIMIT)
 
     if cpu_row is None:
         cpu = settings.container_default_cpu
@@ -489,7 +489,7 @@ def get_container_resource_limits() -> tuple[float, int]:
     return cpu, memory
 
 
-def set_container_resource_limits(cpu: float, memory: int) -> None:
+async def set_container_resource_limits(cpu: float, memory: int) -> None:
     """设置容器 CPU/内存限制。"""
     if (
         isinstance(cpu, bool)
@@ -500,6 +500,6 @@ def set_container_resource_limits(cpu: float, memory: int) -> None:
         raise ConfigError("容器 CPU 限制必须为正数")
     if isinstance(memory, bool) or not isinstance(memory, int) or memory <= 0:
         raise ConfigError("容器内存限制必须为正整数")
-    with _settings_scope() as repo:
-        repo.set(SETTINGS_KEY_CONTAINER_CPU_LIMIT, format(cpu, "g"))
-        repo.set(SETTINGS_KEY_CONTAINER_MEMORY_LIMIT, str(memory))
+    async with _settings_scope() as repo:
+        await repo.set(SETTINGS_KEY_CONTAINER_CPU_LIMIT, format(cpu, "g"))
+        await repo.set(SETTINGS_KEY_CONTAINER_MEMORY_LIMIT, str(memory))

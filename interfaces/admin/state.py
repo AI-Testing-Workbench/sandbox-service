@@ -32,9 +32,9 @@ router = APIRouter(
     response_model=AdminStateResponse,
     responses=api_responses("成功", 200),
 )
-def get_state() -> AdminStateResponse:
+async def get_state() -> AdminStateResponse:
     """获取云端沙箱及用户清单基础统计。"""
-    view = container_service.get_admin_state()
+    view = await container_service.get_admin_state()
     return AdminStateResponse(
         container_count=view.container_count,
         whitelist_container_count=view.whitelist_container_count,

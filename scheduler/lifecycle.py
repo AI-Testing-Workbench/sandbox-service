@@ -10,11 +10,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import threading
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import Callable, Optional, cast
+from typing import Awaitable, Callable, Optional, cast
 from zoneinfo import ZoneInfo
 
 from config import Constants, settings
@@ -82,7 +83,7 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 # T7.2 业务过期检查（独立；可被管理 API 调用）
 # ---------------------------------------------------------------------------
-def expire_containers() -> list[str]:
+async def expire_containers() -> list[str]:
     """`created_at + expiration_hours` 到期的活跃容器执行业务删除（Stop + 写 deleted_at）。
 
     - `expiration_hours == 0`（永不过期）跳过；幂等（已业务删除的不再处理）。
@@ -92,16 +93,16 @@ def expire_containers() -> list[str]:
     expired: list[str] = []
 
     # 只收集候选 ID；每个候选在生命周期锁内用新事务重新读取。
-    with session_scope() as session:
+    async with session_scope() as session:
         candidate_ids = [
-            row.container_id for row in ContainerRepository(session).list_active()
+            row.container_id for row in await ContainerRepository(session).list_active()
         ]
 
     for container_id in candidate_ids:
-        with _container.lifecycle_guard():
-            with session_scope() as session:
+        async with _container.lifecycle_guard():
+            async with session_scope() as session:
                 # 新 Session 避免使用首轮扫描的 expiration_hours/created_at 快照。
-                current = ContainerRepository(session).get(container_id)
+                current = await ContainerRepository(session).get(container_id)
                 if current is None or current.deleted_at is not None:
                     continue
                 if current.expiration_hours <= 0:
@@ -115,7 +116,7 @@ def expire_containers() -> list[str]:
                     continue
             # noinspection broad-exception
             try:
-                _container.business_delete(container_id)
+                await _container.business_delete(container_id)
                 expired.append(container_id)
             except OpenSandboxError as exc:
                 # OpenSandbox 适配层已记录底层原因；这里不再重复打印 traceback。
@@ -135,7 +136,7 @@ def expire_containers() -> list[str]:
 # ---------------------------------------------------------------------------
 # T7.3 保留期检查（独立；物理删除前二次核对 deleted_at 防与管理 API 恢复竞争）
 # ---------------------------------------------------------------------------
-def purge_containers() -> list[str]:
+async def purge_containers() -> list[str]:
     """`deleted_at + TA_SS_CONTAINER_RETENTION_HOURS` 到期即物理删除
     （OpenSandbox Delete + 删除 SQLite 记录）。
 
@@ -150,19 +151,19 @@ def purge_containers() -> list[str]:
     purged: list[str] = []
 
     # 只收集候选 ID；每个候选在生命周期锁内用新事务重新读取。
-    with session_scope() as session:
+    async with session_scope() as session:
         candidate_ids = [
             row.container_id
-            for row in ContainerRepository(session).list_all()
+            for row in await ContainerRepository(session).list_all()
             if row.deleted_at is not None
         ]
 
     for container_id in candidate_ids:
-        with _container.lifecycle_guard():
-            with session_scope() as session:
+        async with _container.lifecycle_guard():
+            async with session_scope() as session:
                 repo = ContainerRepository(session)
                 # 新 Session 避免复用首轮扫描的 identity map 快照。
-                current = repo.get(container_id)
+                current = await repo.get(container_id)
                 if current is None:
                     continue
                 if current.deleted_at is None:
@@ -178,7 +179,7 @@ def purge_containers() -> list[str]:
                     continue
                 # noinspection broad-exception
                 try:
-                    _container.get_opensandbox_client().delete(container_id)
+                    await _container.get_opensandbox_client().delete(container_id)
                 except SandboxNotFoundError:
                     # 远端已不存在，仍可安全清理对应卷目录和本地记录。
                     pass
@@ -194,8 +195,8 @@ def purge_containers() -> list[str]:
                         exc,
                     )
                     continue
-                _container.cleanup_volume_for_container(current.user_id, current.service_id)
-                repo.delete(container_id)
+                await _container.cleanup_volume_for_container(current.user_id, current.service_id)
+                await repo.delete(container_id)
                 _discard_cached_status(container_id)
                 purged.append(container_id)
     if purged:
@@ -206,7 +207,7 @@ def purge_containers() -> list[str]:
 # ---------------------------------------------------------------------------
 # T7.4 运行状态刷新（独立；写内存缓存，供管理 API 展示）
 # ---------------------------------------------------------------------------
-def refresh_status_cache() -> None:
+async def refresh_status_cache() -> None:
     """刷新全部活跃容器的运行状态到进程内缓存；清理已不存在容器的缓存项。
 
     状态映射（v4 §8.3）：Running → `running`；Paused/Terminated 及兼容退出态 →
@@ -215,8 +216,8 @@ def refresh_status_cache() -> None:
     运行态指标不可用时仅将指标置空。
     单个容器刷新失败不会中断本轮，最终日志会单独统计状态/端点失败数量。
     """
-    with session_scope() as session:
-        rows = list(ContainerRepository(session).list_active())
+    async with session_scope() as session:
+        rows = await ContainerRepository(session).list_active()
     active_ids: set[str] = set()
     updates: dict[str, CachedRuntimeStatus] = {}
     update_versions: dict[str, int] = {}
@@ -226,15 +227,15 @@ def refresh_status_cache() -> None:
             cache_version = _cache_versions.get(row.container_id, 0)
         # 首轮扫描后重新确认记录仍活跃，并与业务删除/恢复串行化；否则旧快照
         # 可能在业务删除后继续访问远端，甚至把已删除记录重新写入状态缓存。
-        with _container.lifecycle_guard():
-            with session_scope() as session:
-                current = ContainerRepository(session).get(row.container_id)
+        async with _container.lifecycle_guard():
+            async with session_scope() as session:
+                current = await ContainerRepository(session).get(row.container_id)
             if current is None or current.deleted_at is not None:
                 continue
             current_git_fin_status = getattr(current, "git_fin_status", None)
 
             try:
-                runtime, missing, failed = _fetch_runtime_status(row.container_id)
+                runtime, missing, failed = await _fetch_runtime_status(row.container_id)
             except Exception as exc:  # noqa: BLE001
                 # 单个容器异常不得中断本轮刷新；保留 unknown 快照并统计失败数。
                 logger.error(
@@ -257,7 +258,7 @@ def refresh_status_cache() -> None:
         if missing:
             # noinspection broad-exception
             try:
-                _container.delete_missing_container_record(row.container_id)
+                await _container.delete_missing_container_record(row.container_id)
             except Exception:  # noqa: BLE001
                 logger.exception("远端容器不存在，删除数据库记录失败: %s", row.container_id)
             # 远端缺失不是 stopped；无论本地删除是否成功，都不能把过期的 stopped
@@ -323,19 +324,19 @@ def refresh_status_cache() -> None:
         )
 
 
-def _fetch_status(container_id: str) -> tuple[ContainerStatus, bool]:
+async def _fetch_status(container_id: str) -> tuple[ContainerStatus, bool]:
     """获取并映射状态；第二个返回值表示远端容器是否确认不存在。"""
-    status, missing, _, _ = _fetch_status_details(container_id)
+    status, missing, _, _ = await _fetch_status_details(container_id)
     return status, missing
 
 
-def _fetch_status_details(
+async def _fetch_status_details(
     container_id: str,
 ) -> tuple[ContainerStatus, bool, Optional[str], bool]:
     """获取状态、远端缺失标记、启动时间及本次请求失败标记。"""
     # noinspection broad-exception
     try:
-        status = _container.get_opensandbox_client().get_status(container_id)
+        status = await _container.get_opensandbox_client().get_status(container_id)
     except SandboxNotFoundError:
         return ContainerStatus.STOPPED, True, None, False
     except OpenSandboxError as exc:
@@ -353,11 +354,11 @@ def _fetch_status_details(
     return map_runtime_state(status.state), False, status.transitioned_at, False
 
 
-def _fetch_runtime_status(
+async def _fetch_runtime_status(
     container_id: str,
 ) -> tuple[Optional[CachedRuntimeStatus], bool, bool]:
     """获取状态及管理 API 展示所需附加字段。"""
-    status, missing, started_at, failed = _fetch_status_details(container_id)
+    status, missing, started_at, failed = await _fetch_status_details(container_id)
     if missing:
         return None, True, False
 
@@ -373,7 +374,7 @@ def _fetch_runtime_status(
     client = _container.get_opensandbox_client()
     # noinspection broad-exception
     try:
-        endpoint_result = client.get_endpoint(
+        endpoint_result = await client.get_endpoint(
             container_id,
             Constants.CONTAINER_SSH_PORT.value,
         )
@@ -404,10 +405,13 @@ def _fetch_runtime_status(
         get_metrics = getattr(client, "get_metrics", None)
         if callable(get_metrics):
             # noinspection unnecessary-cast
-            get_metrics_callable = cast(Callable[[str], object], get_metrics)
+            get_metrics_callable = cast(
+                Callable[[str], Awaitable[object]],
+                get_metrics,
+            )
             # noinspection broad-exception
             try:
-                metrics = get_metrics_callable(container_id)
+                metrics = await get_metrics_callable(container_id)
                 if isinstance(metrics, SandboxMetrics):
                     cpu_usage = metrics.cpu_usage
                     memory_usage = metrics.memory_usage
@@ -481,13 +485,13 @@ def _mark_container_transition_requested(
 # ---------------------------------------------------------------------------
 # T7.5 补偿
 # ---------------------------------------------------------------------------
-def compensate() -> list[str]:
+async def compensate() -> list[str]:
     """进程重启后的首次补齐：扫描全部持久化记录，补齐到期的业务删除与保留期物理删除。
 
     幂等：扫描范围排除已完成动作，不重复触发业务删除/物理删除。
     """
-    done = expire_containers()
-    done += purge_containers()
+    done = await expire_containers()
+    done += await purge_containers()
     if done:
         logger.info("补偿完成：处理 %d 项", len(done))
     return done
@@ -496,22 +500,27 @@ def compensate() -> list[str]:
 # ---------------------------------------------------------------------------
 # T7.1 定时循环
 # ---------------------------------------------------------------------------
-def run_loop(stop_event: threading.Event) -> None:
+async def run_loop() -> None:
     """单实例后台循环：先补偿一次，再按周期执行过期 / 保留期 / 状态刷新检查。
 
     周期：`TA_SS_SCHEDULER_POLL_INTERVAL_SECONDS`（v4 §13.1）。
     """
     # noinspection broad-exception
     try:
-        compensate()
+        await compensate()
     except Exception:  # noqa: BLE001
         logger.exception("启动后初次调度失败")
     interval = settings.scheduler_poll_interval_seconds
-    steps = (expire_containers, purge_containers, refresh_status_cache)
-    while not stop_event.wait(interval):
+    steps: tuple[Callable[[], Awaitable[object]], ...] = (
+        expire_containers,
+        purge_containers,
+        refresh_status_cache,
+    )
+    while True:
+        await asyncio.sleep(interval)
         for step in steps:
             # noinspection broad-exception
             try:
-                step()
+                await step()
             except Exception:  # noqa: BLE001
                 logger.exception("调度检查异常: %s", step.__name__)

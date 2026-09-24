@@ -2,7 +2,7 @@
 数据访问层（v4 §6.3）。
 
 统一接口约定：
-- `add(...) -> bool`：是否新插入记录；已存在（含本事务内待提交）不重复插入并返回 False。
+- `add(...) -> bool`：是否加入当前 Session；pending 或已加载的记录返回 False。
 - `get(pk) -> Optional[Entity]`：不存在返回 None。
 - `exists(pk) -> bool`。
 - `delete(pk) -> None`：幂等删除。
@@ -18,7 +18,7 @@ from __future__ import annotations
 from typing import Optional
 
 from sqlalchemy import ColumnElement, func, select, update
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.orm import (
     AdminUserRow,
@@ -27,6 +27,15 @@ from infra.orm import (
     SettingsRow,
     WhitelistUserRow,
 )
+
+
+def _identity_contains(session: AsyncSession, model: type[object], key: str) -> bool:
+    """Check already-loaded persistent rows without issuing synchronous I/O."""
+    return any(
+        identity[0] is model and identity[1] == (key,)
+        for identity in session.identity_map.keys()
+    )
+
 
 __all__ = [
     "ContainerRepository",
@@ -40,7 +49,7 @@ __all__ = [
 class ContainerRepository:
     """`containers` 表数据访问。"""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     def add(self, container: Container) -> bool:
@@ -48,33 +57,33 @@ class ContainerRepository:
         self._session.add(container)
         return True
 
-    def get(self, container_id: str) -> Optional[Container]:
-        return self._session.get(Container, container_id)
+    async def get(self, container_id: str) -> Optional[Container]:
+        return await self._session.get(Container, container_id)
 
-    def get_by_service_id(self, service_id: str) -> Optional[Container]:
+    async def get_by_service_id(self, service_id: str) -> Optional[Container]:
         """按持久化 Git service_id 查询容器记录。"""
-        return self._session.scalar(
+        return await self._session.scalar(
             select(Container).where(Container.service_id == service_id)
         )
 
-    def exists(self, container_id: str) -> bool:
-        return self.get(container_id) is not None
+    async def exists(self, container_id: str) -> bool:
+        return await self.get(container_id) is not None
 
-    def delete(self, container_id: str) -> None:
+    async def delete(self, container_id: str) -> None:
         """物理删除记录（彻底移除）；不存在则无操作。"""
-        container = self.get(container_id)
+        container = await self.get(container_id)
         if container is not None:
-            self._session.delete(container)
+            await self._session.delete(container)
 
-    def list_all(self) -> list[Container]:
+    async def list_all(self) -> list[Container]:
         """全部记录（含业务已删除），供 Scheduler 扫描与补偿使用。"""
-        return list(self._session.scalars(select(Container)))
+        return list(await self._session.scalars(select(Container)))
 
-    def list_all_ids(self) -> list[str]:
+    async def list_all_ids(self) -> list[str]:
         """全部容器 ID（含业务已删除），供远端孤儿容器比对使用。"""
-        return list(self._session.scalars(select(Container.container_id)))
+        return list(await self._session.scalars(select(Container.container_id)))
 
-    def list_active(
+    async def list_active(
         self,
         *,
         user_id: Optional[str] = None,
@@ -96,9 +105,9 @@ class ContainerRepository:
         if container_type is not None:
             stmt = stmt.where(Container.container_type == container_type)
         stmt = stmt.order_by(Container.created_at.desc())
-        return list(self._session.scalars(stmt))
+        return list(await self._session.scalars(stmt))
 
-    def count_active(
+    async def count_active(
         self,
         user_id: Optional[str] = None,
         gitee_repository: Optional[str] = None,
@@ -116,35 +125,41 @@ class ContainerRepository:
         if container_type is not None:
             conditions.append(Container.container_type == container_type)
         stmt = select(func.count()).select_from(Container).where(*conditions)
-        return int(self._session.execute(stmt).scalar_one())
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
 
-    def business_delete(self, container_id: str, deleted_at: str) -> None:
+    async def business_delete(self, container_id: str, deleted_at: str) -> None:
         """业务删除：写 `deleted_at`，记录保留。"""
-        container = self.get(container_id)
+        container = await self.get(container_id)
         if container is not None:
             container.deleted_at = deleted_at
 
-    def business_restore(self, container_id: str, created_at: str, expiration_hours: int) -> None:
+    async def business_restore(
+        self,
+        container_id: str,
+        created_at: str,
+        expiration_hours: int,
+    ) -> None:
         """业务恢复：清除 `deleted_at`，重写 `created_at` 与 `expiration_hours`。"""
-        container = self.get(container_id)
+        container = await self.get(container_id)
         if container is not None:
             container.deleted_at = None
             container.created_at = created_at
             container.expiration_hours = expiration_hours
 
-    def update_expiration(self, container_id: str, expiration_hours: int) -> None:
+    async def update_expiration(self, container_id: str, expiration_hours: int) -> None:
         """设置业务有效时长：仅改 `expiration_hours`，不重置 `created_at`。"""
-        container = self.get(container_id)
+        container = await self.get(container_id)
         if container is not None:
             container.expiration_hours = expiration_hours
 
-    def set_git_fin_status_if_unset(
+    async def set_git_fin_status_if_unset(
         self,
         container_id: str,
         git_fin_status: str,
     ) -> tuple[bool, Optional[str]]:
         """仅在当前没有最终状态时写入，并返回 `(是否写入, 既有状态)`。"""
-        result = self._session.execute(
+        result = await self._session.execute(
             update(Container)
             .where(
                 Container.container_id == container_id,
@@ -154,14 +169,14 @@ class ContainerRepository:
         )
         if getattr(result, "rowcount", 0) == 1:
             return True, None
-        container = self.get(container_id)
+        container = await self.get(container_id)
         if container is None:
             return False, None
         return False, container.git_fin_status
 
-    def clear_git_fin_status_for_recovery(self, container_id: str) -> bool:
+    async def clear_git_fin_status_for_recovery(self, container_id: str) -> bool:
         """清除启动恢复窗口内的旧 Git 终态，返回是否实际清除。"""
-        result = self._session.execute(
+        result = await self._session.execute(
             update(Container)
             .where(
                 Container.container_id == container_id,
@@ -175,52 +190,52 @@ class ContainerRepository:
 class SettingsRepository:
     """`settings` 表数据访问（config.py 的默认镜像 / 数量限制读写经本仓储）。"""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
-    def get(self, key: str) -> Optional[SettingsRow]:
-        return self._session.get(SettingsRow, key)
+    async def get(self, key: str) -> Optional[SettingsRow]:
+        return await self._session.get(SettingsRow, key)
 
-    def exists(self, key: str) -> bool:
-        return self.get(key) is not None
+    async def exists(self, key: str) -> bool:
+        return await self.get(key) is not None
 
-    def set(self, key: str, value: str) -> None:
+    async def set(self, key: str, value: str) -> None:
         """写入或更新配置项。"""
-        row = self.get(key)
+        row = await self.get(key)
         if row is None:
             self._session.add(SettingsRow(key=key, value=value))
         else:
             row.value = value
 
-    def delete(self, key: str) -> None:
-        row = self.get(key)
+    async def delete(self, key: str) -> None:
+        row = await self.get(key)
         if row is not None:
-            self._session.delete(row)
+            await self._session.delete(row)
 
-    def list_all(self) -> list[SettingsRow]:
-        return list(self._session.scalars(select(SettingsRow)))
+    async def list_all(self) -> list[SettingsRow]:
+        return list(await self._session.scalars(select(SettingsRow)))
 
 
 class WhitelistUserRepository:
     """`whitelist_users` 表数据访问。"""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     def add(self, user_id: str) -> bool:
-        """新增白名单用户；已存在（含本事务内待提交）返回 False。"""
-        if self._pending_contains(user_id):
-            return False
-        if self.exists(user_id):
+        """新增白名单用户；本 Session 已有该用户时返回 False。"""
+        if self._pending_contains(user_id) or _identity_contains(
+            self._session, WhitelistUserRow, user_id
+        ):
             return False
         self._session.add(WhitelistUserRow(user_id=user_id))
         return True
 
-    def get(self, user_id: str) -> Optional[WhitelistUserRow]:
-        return self._session.get(WhitelistUserRow, user_id)
+    async def get(self, user_id: str) -> Optional[WhitelistUserRow]:
+        return await self._session.get(WhitelistUserRow, user_id)
 
-    def exists(self, user_id: str) -> bool:
-        return self._pending_contains(user_id) or self.get(user_id) is not None
+    async def exists(self, user_id: str) -> bool:
+        return self._pending_contains(user_id) or (await self.get(user_id)) is not None
 
     def _pending_contains(self, user_id: str) -> bool:
         for row in self._session.new:
@@ -228,35 +243,35 @@ class WhitelistUserRepository:
                 return True
         return False
 
-    def delete(self, user_id: str) -> None:
-        row = self.get(user_id)
+    async def delete(self, user_id: str) -> None:
+        row = await self.get(user_id)
         if row is not None:
-            self._session.delete(row)
+            await self._session.delete(row)
 
-    def list_all(self) -> list[WhitelistUserRow]:
-        return list(self._session.scalars(select(WhitelistUserRow)))
+    async def list_all(self) -> list[WhitelistUserRow]:
+        return list(await self._session.scalars(select(WhitelistUserRow)))
 
 
 class AdminUserRepository:
     """`admin_users` 管理员清单表数据访问。"""
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     def add(self, user_id: str) -> bool:
-        """新增管理员用户；已存在（含本事务内待提交）返回 False。"""
-        if self._pending_contains(user_id):
-            return False
-        if self.exists(user_id):
+        """新增管理员用户；本 Session 已有该用户时返回 False。"""
+        if self._pending_contains(user_id) or _identity_contains(
+            self._session, AdminUserRow, user_id
+        ):
             return False
         self._session.add(AdminUserRow(user_id=user_id))
         return True
 
-    def get(self, user_id: str) -> Optional[AdminUserRow]:
-        return self._session.get(AdminUserRow, user_id)
+    async def get(self, user_id: str) -> Optional[AdminUserRow]:
+        return await self._session.get(AdminUserRow, user_id)
 
-    def exists(self, user_id: str) -> bool:
-        return self._pending_contains(user_id) or self.get(user_id) is not None
+    async def exists(self, user_id: str) -> bool:
+        return self._pending_contains(user_id) or (await self.get(user_id)) is not None
 
     def _pending_contains(self, user_id: str) -> bool:
         for row in self._session.new:
@@ -264,14 +279,14 @@ class AdminUserRepository:
                 return True
         return False
 
-    def delete(self, user_id: str) -> None:
+    async def delete(self, user_id: str) -> None:
         """删除管理员用户；不存在则无操作。"""
-        row = self.get(user_id)
+        row = await self.get(user_id)
         if row is not None:
-            self._session.delete(row)
+            await self._session.delete(row)
 
-    def list_all(self) -> list[AdminUserRow]:
-        return list(self._session.scalars(select(AdminUserRow)))
+    async def list_all(self) -> list[AdminUserRow]:
+        return list(await self._session.scalars(select(AdminUserRow)))
 
 
 class GitCredentialRepository:
@@ -280,27 +295,29 @@ class GitCredentialRepository:
     Repository 只保存和返回数据库中的密文；密码加密、解密和业务字段校验由应用层负责。
     """
 
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     def add(self, credential: GitCredentialRow) -> bool:
-        """新增用户凭证；同一事务中已有相同用户时返回 False。"""
-        if self.exists(credential.user_id):
+        """新增用户凭证；本 Session 已有相同用户时返回 False。"""
+        if self._pending_get(credential.user_id) is not None or _identity_contains(
+            self._session, GitCredentialRow, credential.user_id
+        ):
             return False
         self._session.add(credential)
         return True
 
-    def get(self, user_id: str) -> Optional[GitCredentialRow]:
-        return self._session.get(GitCredentialRow, user_id)
+    async def get(self, user_id: str) -> Optional[GitCredentialRow]:
+        return await self._session.get(GitCredentialRow, user_id)
 
-    def exists(self, user_id: str) -> bool:
-        return self._pending_get(user_id) is not None or self.get(user_id) is not None
+    async def exists(self, user_id: str) -> bool:
+        return self._pending_get(user_id) is not None or (await self.get(user_id)) is not None
 
-    def upsert(self, credential: GitCredentialRow) -> GitCredentialRow:
+    async def upsert(self, credential: GitCredentialRow) -> GitCredentialRow:
         """按 `user_id` 插入或覆盖当前用户凭证，暂不提交事务。"""
         row = self._pending_get(credential.user_id)
         if row is None:
-            row = self.get(credential.user_id)
+            row = await self.get(credential.user_id)
         if row is None:
             self._session.add(credential)
             return credential
@@ -313,14 +330,14 @@ class GitCredentialRepository:
             existing.git_password = credential.git_password
         return existing
 
-    def delete(self, user_id: str) -> None:
+    async def delete(self, user_id: str) -> None:
         """删除用户凭证；不存在时无操作。"""
-        row = self.get(user_id)
+        row = await self.get(user_id)
         if row is not None:
-            self._session.delete(row)
+            await self._session.delete(row)
 
-    def list_all(self) -> list[GitCredentialRow]:
-        return list(self._session.scalars(select(GitCredentialRow)))
+    async def list_all(self) -> list[GitCredentialRow]:
+        return list(await self._session.scalars(select(GitCredentialRow)))
 
     def _pending_get(self, user_id: str) -> Optional[GitCredentialRow]:
         for row in self._session.new:

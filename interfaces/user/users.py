@@ -30,12 +30,12 @@ router = APIRouter(prefix="/user", tags=["用户 API"])
     status_code=200,
     responses=api_responses("成功", 200, 400, 403),
 )
-def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
+async def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
     """查询指定用户是否为管理员及其云端沙箱创建限制模式。"""
-    admin = admin_users.is_admin(request.user_id)
+    admin = await admin_users.is_admin(request.user_id)
     limit = (
         "none"
-        if admin or whitelist.is_whitelisted(request.user_id)
+        if admin or await whitelist.is_whitelisted(request.user_id)
         else settings.container_create_limit_mode
     )
     return AdminCheckResponse(admin=admin, limit=limit)
@@ -47,8 +47,8 @@ def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
     status_code=200,
     responses=api_responses("成功", 200, 400, 403, 404),
 )
-def map_container(request: MapContainerRequest) -> MapContainerResponse:
+async def map_container(request: MapContainerRequest) -> MapContainerResponse:
     """查询云端沙箱会话 ID 对应的云端沙箱 ID。"""
     return MapContainerResponse(
-        container_id=container.map_container_id(request.user_id, request.service_id)
+        container_id=await container.map_container_id(request.user_id, request.service_id)
     )

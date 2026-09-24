@@ -17,11 +17,11 @@ __all__ = [
 ]
 
 
-def require_admin_access(
+async def require_admin_access(
     operator_user_id: Annotated[str | None, Depends(get_operator_user_id)],
 ) -> None:
     """要求操作用户属于管理员清单；回环请求由通用依赖旁路。"""
     if operator_user_id is None:
         return
-    if not admin_users.is_admin(operator_user_id):
+    if not await admin_users.is_admin(operator_user_id):
         raise UnauthorizedError("未认证")

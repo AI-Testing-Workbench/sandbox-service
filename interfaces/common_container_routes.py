@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter, Response
 
@@ -56,7 +56,7 @@ def register_container_action_routes(
 def _register_action(
     router: APIRouter,
     *,
-    action: Callable[[str], None],
+    action: Callable[[str], Awaitable[None]],
     path: str,
     operation_id: str,
     summary: str,
@@ -69,6 +69,6 @@ def _register_action(
         summary=summary,
         responses=api_responses("成功 (无内容)", 204, 403, 404, 409, 502),
     )
-    def action_endpoint(container_id: str) -> Response:
-        action(container_id)
+    async def action_endpoint(container_id: str) -> Response:
+        await action(container_id)
         return Response(status_code=204)

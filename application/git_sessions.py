@@ -143,7 +143,7 @@ class GitSessionStore:
             self._by_container_id[container_id] = session
             return session
 
-    def resolve_service_resource(
+    async def resolve_service_resource(
         self,
         service_id: str,
         operator_user_id: str,
@@ -174,8 +174,8 @@ class GitSessionStore:
                 if ended_status is None:
                     raise GitSessionEndedError("Git 初始化会话已结束")
         # 初始化会话清理或服务重启后，从持久化容器记录恢复最终 service_id。
-        with session_scope() as db_session:
-            row = ContainerRepository(db_session).get_by_service_id(service_id)
+        async with session_scope() as db_session:
+            row = await ContainerRepository(db_session).get_by_service_id(service_id)
         if row is None or row.deleted_at is not None:
             raise GitResourceNotFoundError("Git service_id 不存在")
         _ensure_user_match(row.user_id, operator_user_id)
@@ -188,7 +188,7 @@ class GitSessionStore:
             git_fin_status=row.git_fin_status,
         )
 
-    def update_status(
+    async def update_status(
         self,
         service_id: str,
         operator_user_id: str,
@@ -199,7 +199,7 @@ class GitSessionStore:
             status = coerce_git_status(git_status)
         except ValueError as exc:
             raise InvalidArgumentError("Git 状态非法") from exc
-        resource = self.resolve_service_resource(service_id, operator_user_id)
+        resource = await self.resolve_service_resource(service_id, operator_user_id)
         if resource.session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         with self._lock:
@@ -210,7 +210,7 @@ class GitSessionStore:
             resource.session.git_status = status
             return resource.session
 
-    def prepare_starting_session(
+    async def prepare_starting_session(
         self,
         service_id: str,
         operator_user_id: str,
@@ -225,23 +225,28 @@ class GitSessionStore:
         operator_user_id = _require_operator_user_id(operator_user_id)
 
         ended: Optional[tuple[str, Optional[GitStatus]]] = None
+        session_to_reset: Optional[GitInitializationSession] = None
         with self._lock:
             session = self._by_service_id.get(service_id)
             if session is not None:
                 _ensure_user_match(session.service_user, operator_user_id)
                 if not session.ended and session.git_status is GitStatus.STARTING:
                     return session
-                return self._reset_session_to_starting(session)
+                session_to_reset = session
 
-            ended = self._ended_service_sessions.get(service_id)
-            if ended is not None:
-                ended_user, _ = ended
-                _ensure_user_match(ended_user, operator_user_id)
+            else:
+                ended = self._ended_service_sessions.get(service_id)
+                if ended is not None:
+                    ended_user, _ = ended
+                    _ensure_user_match(ended_user, operator_user_id)
+
+        if session_to_reset is not None:
+            return await self._reset_session_to_starting(session_to_reset)
 
         # 进程重启或 discard_session 后，持久化容器记录用于确认这是同一个
         # 近期初始化；若存在旧终态，则在恢复窗口内先清除再重新开始。
-        with session_scope() as db_session:
-            row = ContainerRepository(db_session).get_by_service_id(service_id)
+        async with session_scope() as db_session:
+            row = await ContainerRepository(db_session).get_by_service_id(service_id)
 
         if row is None:
             if ended is not None:
@@ -253,37 +258,41 @@ class GitSessionStore:
         if not row.container_id or not _within_starting_recovery_window(row.created_at):
             raise GitSessionEndedError("Git 初始化会话无法恢复")
         if row.git_fin_status is not None:
-            with session_scope() as db_session:
-                if not ContainerRepository(db_session).clear_git_fin_status_for_recovery(
-                    row.container_id
-                ):
+            async with session_scope() as db_session:
+                repository = ContainerRepository(db_session)
+                if not await repository.clear_git_fin_status_for_recovery(row.container_id):
                     raise GitSessionEndedError("Git 初始化会话无法恢复")
 
+        session_to_reset = None
         with self._lock:
             # 在数据库读取期间如果已有请求恢复了会话，复用该会话而不覆盖其状态。
             existing = self._by_service_id.get(service_id)
             if existing is not None:
                 _ensure_user_match(existing.service_user, operator_user_id)
                 if existing.ended or existing.git_status is not GitStatus.STARTING:
-                    return self._reset_session_to_starting(existing)
-                return existing
+                    session_to_reset = existing
+                else:
+                    return existing
+            else:
+                existing_by_container = self._by_container_id.get(row.container_id)
+                if existing_by_container is not None:
+                    raise BusinessConflictError("Git container_id 已被其他会话占用")
+                session = GitInitializationSession(
+                    service_id=service_id,
+                    service_user=row.user_id,
+                    created_at=_parse_created_at(row.created_at),
+                    container_id=row.container_id,
+                )
+                self._by_service_id[service_id] = session
+                self._by_container_id[row.container_id] = session
+                if ended is not None:
+                    self._forget_ended_service_session(service_id)
+                return session
 
-            existing_by_container = self._by_container_id.get(row.container_id)
-            if existing_by_container is not None:
-                raise BusinessConflictError("Git container_id 已被其他会话占用")
-            session = GitInitializationSession(
-                service_id=service_id,
-                service_user=row.user_id,
-                created_at=_parse_created_at(row.created_at),
-                container_id=row.container_id,
-            )
-            self._by_service_id[service_id] = session
-            self._by_container_id[row.container_id] = session
-            if ended is not None:
-                self._forget_ended_service_session(service_id)
-            return session
+        assert session_to_reset is not None
+        return await self._reset_session_to_starting(session_to_reset)
 
-    def _reset_session_to_starting(
+    async def _reset_session_to_starting(
         self,
         session: GitInitializationSession,
     ) -> GitInitializationSession:
@@ -291,35 +300,41 @@ class GitSessionStore:
             raise BusinessConflictError("Git 状态不能回退到 starting")
         if session.container_id is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
-        self._clear_persisted_final_status(session.container_id)
-        session.clear_temporary_credential()
-        session.ended = False
-        session.git_status = GitStatus.STARTING
-        return session
+        await self._clear_persisted_final_status(session.container_id)
+        with self._lock:
+            if (
+                session.service_id is None
+                or self._by_service_id.get(session.service_id) is not session
+            ):
+                raise GitSessionEndedError("Git 初始化会话已结束")
+            session.clear_temporary_credential()
+            session.ended = False
+            session.git_status = GitStatus.STARTING
+            return session
 
     @staticmethod
-    def _clear_persisted_final_status(
+    async def _clear_persisted_final_status(
         container_id: str,
     ) -> None:
         """清除恢复窗口内的旧终态。"""
-        with session_scope() as db_session:
+        async with session_scope() as db_session:
             repository = ContainerRepository(db_session)
-            row = repository.get(container_id)
+            row = await repository.get(container_id)
             if row is None or row.deleted_at is not None:
                 return
             if row.git_fin_status is None:
                 return
-            if not repository.clear_git_fin_status_for_recovery(container_id):
+            if not await repository.clear_git_fin_status_for_recovery(container_id):
                 raise GitSessionEndedError("Git 初始化会话无法恢复")
 
-    def set_temporary_credential(
+    async def set_temporary_credential(
         self,
         service_id: str,
         operator_user_id: str,
         credential: GitCredential,
     ) -> GitInitializationSession:
         """将非持久化凭证保存到当前资源的进程内存会话。"""
-        resource = self.resolve_service_resource(service_id, operator_user_id)
+        resource = await self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
@@ -335,13 +350,13 @@ class GitSessionStore:
             session.credential_claimed = False
             return session
 
-    def mark_credential_available(
+    async def mark_credential_available(
         self,
         service_id: str,
         operator_user_id: str,
     ) -> GitInitializationSession:
         """标记持久化凭证已可领取；明文凭证仍不进入会话。"""
-        resource = self.resolve_service_resource(service_id, operator_user_id)
+        resource = await self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
@@ -352,13 +367,13 @@ class GitSessionStore:
             session.credential_claimed = False
             return session
 
-    def claim_temporary_credential(
+    async def claim_temporary_credential(
         self,
         service_id: str,
         operator_user_id: str,
     ) -> GitCredential:
         """原子领取并清除当前会话的临时明文凭证。"""
-        resource = self.resolve_service_resource(service_id, operator_user_id)
+        resource = await self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitCredentialUnavailableError("当前资源没有临时凭证")

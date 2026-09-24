@@ -1,7 +1,7 @@
 """
 OpenSandbox 集成层（v4 §8）。
 
-- 使用 OpenSandbox 官方 Python 包（同步封装 `SandboxSync`）作为客户端，封装于本模块；
+- 使用 OpenSandbox 官方 Python 包（异步 `Sandbox` / `SandboxManager`）作为客户端，封装于本模块；
   业务层与接口层不直接依赖原始包细节（v4 §8.1）。
 - 容器日志通过 OpenSandbox 管理面 diagnostics plain-text API 读取，固定请求最后 10000 行。
 - 容器资源指标属于可选附加信息，获取失败时返回空值，不影响容器状态查询。
@@ -13,19 +13,19 @@ from __future__ import annotations
 
 import ast
 import logging
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional, TypeVar
 from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
-from httpx import Client as HttpxClient
-from opensandbox.config.connection_sync import ConnectionConfigSync
+from httpx import AsyncClient as HttpxAsyncClient
+from opensandbox.config import ConnectionConfig
 from opensandbox.models.sandboxes import PVC
 from opensandbox.models.sandboxes import SandboxFilter
 from opensandbox.models.sandboxes import Volume as SdkVolume
-from opensandbox.sync.manager import SandboxManagerSync
-from opensandbox.sync.sandbox import SandboxSync
+from opensandbox.manager import SandboxManager
+from opensandbox.sandbox import Sandbox
 
 from config import Constants, settings
 from infra.opensandbox.types import (
@@ -46,11 +46,13 @@ class _SuppressSdkMetricsErrors(logging.Filter):
         return record.levelno < logging.ERROR
 
 
-# MetricsAdapterSync 在抛出异常前会自行记录 ERROR；只过滤该 SDK logger，
-# 保留 OpenSandbox 其他适配器的错误日志。
-logging.getLogger("opensandbox.sync.adapters.metrics_adapter").addFilter(
-    _SuppressSdkMetricsErrors()
-)
+# MetricsAdapter 在抛出异常前会自行记录 ERROR；只过滤 metrics logger，
+# 保留 OpenSandbox 其他适配器的错误日志。保留 sync logger 名称以兼容旧版 SDK。
+for _metrics_logger_name in (
+    "opensandbox.adapters.metrics_adapter",
+    "opensandbox.sync.adapters.metrics_adapter",
+):
+    logging.getLogger(_metrics_logger_name).addFilter(_SuppressSdkMetricsErrors())
 
 __all__ = [
     "OpenSandboxClient",
@@ -130,7 +132,7 @@ class OpenSandboxClient:
     """OpenSandbox 官方 Python 包客户端封装。"""
 
     def __init__(self, timeout: float = 30.0) -> None:
-        self._config = ConnectionConfigSync(
+        self._config = ConnectionConfig(
             domain=settings.opensandbox_url,
             api_key=settings.opensandbox_api_key,
             request_timeout=timedelta(seconds=timeout),
@@ -140,7 +142,7 @@ class OpenSandboxClient:
         # Keep a failed metrics probe from blocking lifecycle status requests.
         self._metrics_timeout = min(timeout, _METRICS_TIMEOUT_SECONDS)
 
-    def create(
+    async def create(
         self,
         image: str,
         *,
@@ -182,22 +184,24 @@ class OpenSandboxClient:
             }
             if volumes:
                 create_kwargs["volumes"] = [_to_sdk_volume(volume) for volume in volumes]
-            sandbox = SandboxSync.create(image, **create_kwargs)
-            container_id = sandbox.id
-            sandbox.close()
-            return CreatedSandbox(container_id=container_id)
+            sandbox = await Sandbox.create(image, **create_kwargs)
+            try:
+                return CreatedSandbox(container_id=sandbox.id)
+            finally:
+                await sandbox.close()
         except Exception as exc:  # noqa: BLE001
             logger.error("OpenSandbox 创建容器失败: %s: %s", type(exc).__name__, exc)
             raise OpenSandboxError("创建容器失败") from exc
 
-    def list_container_ids(self, *, metadata: dict[str, str]) -> list[str]:
+    async def list_container_ids(self, *, metadata: dict[str, str]) -> list[str]:
         """按 metadata 查询全部沙箱 ID，自动遍历 OpenSandbox 分页结果。"""
         try:
             container_ids: list[str] = []
             page = 1
-            with SandboxManagerSync.create(connection_config=self._config) as manager:
+            manager = await SandboxManager.create(connection_config=self._config)
+            async with manager:
                 while True:
-                    result = manager.list_sandbox_infos(
+                    result = await manager.list_sandbox_infos(
                         SandboxFilter(
                             metadata=metadata,
                             page=page,
@@ -222,9 +226,9 @@ class OpenSandboxClient:
             )
             raise _classify(exc, "查询容器列表失败") from exc
 
-    def get_status(self, container_id: str) -> SandboxStatus:
+    async def get_status(self, container_id: str) -> SandboxStatus:
         """获取容器运行状态（v4 §8.2 Get Status）。"""
-        info = self._run(container_id, "获取容器状态", lambda sb: sb.get_info())
+        info = await self._run(container_id, "获取容器状态", lambda sb: sb.get_info())
         status = info.status
         return SandboxStatus(
             state=status.state,
@@ -237,22 +241,22 @@ class OpenSandboxClient:
             ),
         )
 
-    def get_endpoint(self, container_id: str, port: int) -> SandboxEndpoint:
+    async def get_endpoint(self, container_id: str, port: int) -> SandboxEndpoint:
         """获取容器外部访问端点（v4 §8.2 Get Endpoint）。"""
-        endpoint = (self._run
-                    (container_id,
-                     "获取容器端点",
-                     lambda sb: sb.get_endpoint(port))
-                    )
+        endpoint = await self._run(
+            container_id,
+            "获取容器端点",
+            lambda sb: sb.get_endpoint(port),
+        )
         return SandboxEndpoint(
             endpoint=endpoint.endpoint,
             headers=dict(endpoint.headers or {})
         )
 
-    def get_metrics(self, container_id: str) -> Optional[SandboxMetrics]:
+    async def get_metrics(self, container_id: str) -> Optional[SandboxMetrics]:
         """获取容器当前 CPU/内存使用率；指标不可用时返回空值。"""
         try:
-            raw = self._get_metrics_raw(container_id)
+            raw = await self._get_metrics_raw(container_id)
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, SandboxNotFoundError):
                 raise
@@ -290,7 +294,7 @@ class OpenSandboxClient:
         memory_usage = (memory_used / memory_total * 100) if memory_total > 0 else 0.0
         return SandboxMetrics(cpu_usage=cpu_usage, memory_usage=memory_usage)
 
-    def get_logs(self, container_id: str) -> str:
+    async def get_logs(self, container_id: str) -> str:
         """获取容器日志；固定请求 OpenSandbox 最后 10000 行。"""
         path = f"/sandboxes/{quote(str(container_id), safe='')}/diagnostics/logs"
         headers = {
@@ -303,12 +307,12 @@ class OpenSandboxClient:
             headers["OPEN-SANDBOX-API-KEY"] = api_key
 
         try:
-            with HttpxClient(
+            async with HttpxAsyncClient(
                 base_url=self._config.get_base_url(),
                 headers=headers,
                 timeout=self._config.request_timeout.total_seconds(),
             ) as client:
-                response = client.get(path, params={"tail": _LOG_TAIL})
+                response = await client.get(path, params={"tail": _LOG_TAIL})
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "OpenSandbox 获取容器日志请求失败: %s: %s: %s",
@@ -331,10 +335,10 @@ class OpenSandboxClient:
         # 日志接口偶尔不带可靠的 charset；统一按 UTF-8 解码，保证上层拿到文本。
         return normalize_log_text(response.content.decode("utf-8", errors="replace"))
 
-    def _get_metrics_raw(self, container_id: str) -> object:
+    async def _get_metrics_raw(self, container_id: str) -> object:
         """通过直连 execd 端点获取 metrics；仅修正服务容器不可达的 loopback 主机。"""
         from opensandbox.constants import DEFAULT_EXECD_PORT
-        from opensandbox.sync.adapters.factory import AdapterFactorySync
+        from opensandbox.adapters.factory import AdapterFactory
 
         metrics_config = self._config.model_copy(
             update={
@@ -342,11 +346,11 @@ class OpenSandboxClient:
                 "headers": dict(self._config.headers),
             }
         )
-        factory = AdapterFactorySync(metrics_config)
+        factory = AdapterFactory(metrics_config)
         sandbox_service = factory.create_sandbox_service()
         metrics_service: object | None = None
         try:
-            endpoint = sandbox_service.get_sandbox_endpoint(
+            endpoint = await sandbox_service.get_sandbox_endpoint(
                 container_id,
                 DEFAULT_EXECD_PORT,
                 False,
@@ -354,15 +358,15 @@ class OpenSandboxClient:
             endpoint.endpoint = _rewrite_loopback_endpoint(endpoint.endpoint)
             metrics_service = factory.create_metrics_service(endpoint)
             get_metrics = getattr(metrics_service, "get_metrics")
-            return get_metrics(container_id)
+            return await get_metrics(container_id)
         finally:
-            _close_sdk_service(metrics_service)
-            _close_sdk_service(sandbox_service)
+            await _close_sdk_service(metrics_service)
+            await _close_sdk_service(sandbox_service)
 
-    def start(self, container_id: str) -> None:
+    async def start(self, container_id: str) -> None:
         """启动容器（v4 §11.3 Start 幂等；容器不存在视为已满足）。"""
         try:
-            current = self.get_status(container_id)
+            current = await self.get_status(container_id)
         except SandboxNotFoundError:
             return
         except OpenSandboxError:
@@ -374,14 +378,16 @@ class OpenSandboxClient:
         if current is not None and current.state.strip().upper() == "FAILED":
             raise SandboxFailedError("Failed 状态的容器不能 Resume")
         try:
-            sandbox = SandboxSync.resume(
+            sandbox = await Sandbox.resume(
                 container_id,
                 connection_config=self._config,
                 skip_health_check=True,
             )
-            sandbox.close()
+            await sandbox.close()
         except Exception as exc:  # noqa: BLE001
-            if _is_not_found(exc) or _is_in_state(self, container_id, frozenset({"RUNNING"})):
+            if _is_not_found(exc) or await _is_in_state(
+                self, container_id, frozenset({"RUNNING"})
+            ):
                 return
             logger.error(
                 "OpenSandbox 启动容器失败: %s: %s: %s",
@@ -391,15 +397,18 @@ class OpenSandboxClient:
             )
             raise OpenSandboxError("启动容器失败") from exc
 
-    def stop(self, container_id: str) -> None:
+    async def stop(self, container_id: str) -> None:
         """停止容器（v4 §11.3 Stop 幂等；容器不存在视为已停止）。"""
         try:
             # Stop 使用管理面 Pause，不连接容器或读取 execd endpoint；损坏容器
             # 仍可被停止，且不会因为 execd 不可用阻塞业务删除。
-            with SandboxManagerSync.create(connection_config=self._config) as manager:
-                manager.pause_sandbox(container_id)
+            manager = await SandboxManager.create(connection_config=self._config)
+            async with manager:
+                await manager.pause_sandbox(container_id)
         except Exception as exc:  # noqa: BLE001
-            if _is_not_found(exc) or _is_in_state(self, container_id, _STOP_IDEMPOTENT_STATES):
+            if _is_not_found(exc) or await _is_in_state(
+                self, container_id, _STOP_IDEMPOTENT_STATES
+            ):
                 return
             logger.error(
                 "OpenSandbox 停止容器失败: %s: %s: %s",
@@ -409,22 +418,23 @@ class OpenSandboxClient:
             )
             raise OpenSandboxError("停止容器失败") from exc
 
-    def restart(self, container_id: str) -> None:
+    async def restart(self, container_id: str) -> None:
         """重启容器：停止并重新启动，Container ID 不变（v4 §11.3 Restart 幂等）。"""
         try:
-            current = self.get_status(container_id)
+            current = await self.get_status(container_id)
         except SandboxNotFoundError:
             return
         if current.state.strip().upper() == "FAILED":
             raise SandboxFailedError("Failed 状态的容器不能 Restart")
-        self.stop(container_id)
-        self.start(container_id)
+        await self.stop(container_id)
+        await self.start(container_id)
 
-    def delete(self, container_id: str) -> None:
+    async def delete(self, container_id: str) -> None:
         """物理删除容器（v4 §11.4 Permanent Delete；已删除幂等成功）。"""
         try:
-            with SandboxManagerSync.create(connection_config=self._config) as manager:
-                manager.kill_sandbox(container_id)
+            manager = await SandboxManager.create(connection_config=self._config)
+            async with manager:
+                await manager.kill_sandbox(container_id)
         except Exception as exc:  # noqa: BLE001
             if _is_not_found(exc):
                 return
@@ -436,13 +446,18 @@ class OpenSandboxClient:
             )
             raise OpenSandboxError("删除容器失败") from exc
 
-    def _run(self, container_id: str, summary: str, op: Callable[[SandboxSync], _T]) -> _T:
+    async def _run(
+        self,
+        container_id: str,
+        summary: str,
+        op: Callable[[Sandbox], Awaitable[_T]],
+    ) -> _T:
         """连接容器执行 `op` 并释放本地资源；异常记录详细日志后抛摘要。
 
         容器不存在时抛 `SandboxNotFoundError`（错误细节仍写日志），其余异常抛 `OpenSandboxError`。
         """
         try:
-            sandbox = SandboxSync.connect(
+            sandbox = await Sandbox.connect(
                 container_id,
                 connection_config=self._config,
                 skip_health_check=True,
@@ -457,7 +472,7 @@ class OpenSandboxClient:
             )
             raise _classify(exc, f"{summary}失败") from exc
         try:
-            return op(sandbox)
+            return await op(sandbox)
         except Exception as exc:  # noqa: BLE001
             logger.error(
                 "OpenSandbox %s 失败: %s: %s: %s",
@@ -468,7 +483,7 @@ class OpenSandboxClient:
             )
             raise _classify(exc, f"{summary}失败") from exc
         finally:
-            sandbox.close()
+            await sandbox.close()
 
 
 def _classify(exc: Exception, summary: str) -> OpenSandboxError:
@@ -533,13 +548,13 @@ def _rewrite_loopback_endpoint(endpoint: str) -> str:
     return urlunsplit(("", netloc, parsed.path, parsed.query, parsed.fragment)).lstrip("/")
 
 
-def _close_sdk_service(service: object | None) -> None:
+async def _close_sdk_service(service: object | None) -> None:
     """释放官方 SDK 适配器持有的 HTTP 客户端。"""
     if service is None:
         return
     http_client = getattr(service, "_httpx_client", None)
-    if isinstance(http_client, HttpxClient):
-        http_client.close()
+    if isinstance(http_client, HttpxAsyncClient):
+        await http_client.aclose()
 
 
 def _metric_number(value: object, label: str) -> float:
@@ -555,10 +570,14 @@ def _metric_number(value: object, label: str) -> float:
     return number
 
 
-def _is_in_state(client: OpenSandboxClient, container_id: str, states: frozenset[str]) -> bool:
+async def _is_in_state(
+    client: OpenSandboxClient,
+    container_id: str,
+    states: frozenset[str],
+) -> bool:
     """操作失败后复核远端状态，避免把已达到目标状态的请求报为失败。"""
     try:
-        status = client.get_status(container_id)
+        status = await client.get_status(container_id)
     except SandboxNotFoundError:
         return True
     except OpenSandboxError:
