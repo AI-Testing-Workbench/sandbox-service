@@ -16,6 +16,7 @@ from application.git_credentials import (
     delete_persisted_credential,
     get_persisted_credential,
     save_credential,
+    upsert_persisted_credential,
 )
 from application.git_sessions import (
     GitInitializationSession,
@@ -111,7 +112,6 @@ async def report_git_status(
                 raise GitSessionEndedError("Git 初始化会话已结束")
             _validate_transition(session)
             if status is GitStatus.CREDENTIAL_REJECTED:
-                # 认证失败说明用户级凭证已经失效；临时凭证由会话层同步清理。
                 await delete_persisted_credential(resource.user_id)
             updated_session = await store.update_status(
                 service_id,
@@ -125,6 +125,7 @@ async def report_git_status(
             final_status = coerce_git_final_status(status)
         except ValueError as exc:
             raise InvalidArgumentError("Git 最终状态非法") from exc
+        final_status_value = str(final_status.value)
         if resource.git_fin_status is not None:
             current_status = resource.git_fin_status
             if (
@@ -134,18 +135,25 @@ async def report_git_status(
                 _finish_git_session(store, service_id, final_status)
                 return GitStatus(final_status.value)
             raise BusinessConflictError("Git 初始化已经有最终状态")
-        if resource.container_id is None:
+        container_id = resource.container_id
+        if container_id is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         if session is not None and session.ended:
             raise GitSessionEndedError("Git 初始化会话已结束")
+        staged_credential = None
+        if final_status is GitFinalStatus.INITIALIZED:
+            staged_credential = await store.get_staged_persistent_credential(
+                service_id,
+                operator_user_id,
+            )
 
         try:
             async with session_scope() as db_session:
                 updated, existing_status = await ContainerRepository(
                     db_session
                 ).set_git_fin_status_if_unset(
-                    resource.container_id,
-                    final_status.value,
+                    container_id,
+                    final_status_value,
                 )
                 if not updated:
                     if existing_status is None:
@@ -161,6 +169,16 @@ async def report_git_status(
                         raise BusinessConflictError("Git 初始化已经有最终状态")
                 else:
                     idempotent = False
+                if (
+                    final_status is GitFinalStatus.INITIALIZED
+                    and (updated or idempotent)
+                    and staged_credential is not None
+                ):
+                    await upsert_persisted_credential(
+                        db_session,
+                        resource.user_id,
+                        staged_credential,
+                    )
         except (BusinessConflictError, GitResourceNotFoundError):
             raise
         except Exception as exc:  # noqa: BLE001
@@ -229,6 +247,8 @@ async def submit_git_credential(
     persist: bool,
 ) -> None:
     """提交持久化或当前会话临时凭证，不返回密码。"""
+    if not isinstance(persist, bool):
+        raise InvalidArgumentError("persist 必须为布尔值")
     operator_user_id = _require_operator_user_id(operator_user_id)
     ensure_user_not_blacklisted(operator_user_id)
     store = get_git_session_store()
@@ -249,11 +269,14 @@ async def submit_git_credential(
             GitStatus.FAILED_USER_CANCELLED,
         )
         return
-
-    stored = await save_credential(resource.user_id, credential, persist=persist)
     if persist:
-        await store.mark_credential_available(service_id, operator_user_id)
+        await store.stage_persistent_credential(
+            service_id,
+            operator_user_id,
+            credential,
+        )
     else:
+        stored = await save_credential(resource.user_id, credential, persist=False)
         if stored is None:
             raise ExternalDependencyError("Git 临时凭证保存失败")
         await store.set_temporary_credential(service_id, operator_user_id, stored)

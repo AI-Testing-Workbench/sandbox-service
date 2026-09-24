@@ -193,14 +193,18 @@ async def lifecycle_guard() -> AsyncIterator[None]:
 
 async def delete_missing_container_record(container_id: str) -> None:
     """删除已确认不存在的远端容器对应的本地活跃记录。"""
+    service_id: Optional[str] = None
     async with lifecycle_guard():
         async with session_scope() as session:
             repo = ContainerRepository(session)
             row = await repo.get(container_id)
             if row is None or row.deleted_at is not None:
                 return
+            service_id = row.service_id
             await cleanup_volume_for_container(row.user_id, row.service_id)
             await repo.delete(container_id)
+    if service_id is not None:
+        get_git_session_store().discard_session(service_id)
     logger.info("远端容器不存在，已删除数据库记录: %s", container_id)
 
 
@@ -920,11 +924,13 @@ async def business_delete(container_id: str) -> None:
         ensure_user_not_blacklisted(row.user_id)
         if row.deleted_at is not None:
             raise ContainerNotFoundError("云端沙箱不存在")
+        service_id = row.service_id
         try:
             await get_opensandbox_client().stop(container_id)
         except Exception as exc:
             _raise_backend_service_error("停止容器", exc)
         await repo.business_delete(container_id, _now_iso())
+    get_git_session_store().discard_session(service_id)
 
 
 # ---------------------------------------------------------------------------
@@ -993,6 +999,7 @@ async def permanent_delete(container_id: str) -> None:
             if row is None:
                 raise ContainerNotFoundError("云端沙箱不存在")
             ensure_user_not_blacklisted(row.user_id)
+            service_id = row.service_id
             try:
                 await get_opensandbox_client().delete(container_id)
             except SandboxNotFoundError:
@@ -1002,6 +1009,7 @@ async def permanent_delete(container_id: str) -> None:
                 _raise_backend_service_error("删除容器", exc)
             await cleanup_volume_for_container(row.user_id, row.service_id)
             await repo.delete(container_id)
+    get_git_session_store().discard_session(service_id)
 
 
 # ---------------------------------------------------------------------------

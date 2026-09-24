@@ -16,11 +16,13 @@ from infra.db import session_scope
 from infra.git_crypto import GitCryptoError, initialize_git_credential_crypto
 from infra.orm import GitCredentialRow
 from infra.repositories import GitCredentialRepository
+from sqlalchemy.ext.asyncio import AsyncSession
 
 __all__ = [
     "GitCredential",
     "validate_credential",
     "save_credential",
+    "upsert_persisted_credential",
     "get_persisted_credential",
     "delete_persisted_credential",
 ]
@@ -67,17 +69,27 @@ async def save_credential(
         return credential
 
     async with session_scope() as session:
-        cipher = await initialize_git_credential_crypto(session)
-        await GitCredentialRepository(session).upsert(
-            GitCredentialRow(
-                user_id=user_id,
-                type=credential.type,
-                git_username=credential.git_username,
-                git_email=credential.git_email,
-                git_password=cipher.encrypt(credential.git_password),
-            )
-        )
+        await upsert_persisted_credential(session, user_id, credential)
     return None
+
+
+async def upsert_persisted_credential(
+    session: AsyncSession,
+    user_id: str,
+    credential: GitCredential,
+) -> None:
+    """Encrypt and upsert a credential inside the caller's transaction."""
+    validate_credential(user_id, credential)
+    cipher = await initialize_git_credential_crypto(session)
+    await GitCredentialRepository(session).upsert(
+        GitCredentialRow(
+            user_id=user_id,
+            type=credential.type,
+            git_username=credential.git_username,
+            git_email=credential.git_email,
+            git_password=cipher.encrypt(credential.git_password),
+        )
+    )
 
 
 async def get_persisted_credential(user_id: str) -> GitCredential | None:

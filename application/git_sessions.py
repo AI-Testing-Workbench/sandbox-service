@@ -62,16 +62,21 @@ class GitInitializationSession:
     temporary_git_email: Optional[str] = None
     temporary_git_password: Optional[str] = field(default=None, repr=False)
     temporary_type: Optional[str] = None
+    staged_persistent_credential: Optional[GitCredential] = field(
+        default=None,
+        repr=False,
+    )
     credential_claimed: bool = False
     ended: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def clear_temporary_credential(self, *, claimed: bool = False) -> None:
-        """清除会话中的全部临时凭证字段。"""
+        """清除会话中未验证的凭证和已领取凭证的来源标记。"""
         self.temporary_git_username = None
         self.temporary_git_email = None
         self.temporary_git_password = None
         self.temporary_type = None
+        self.staged_persistent_credential = None
         self.credential_available = False
         self.credential_claimed = claimed
 
@@ -342,6 +347,7 @@ class GitSessionStore:
         with self._lock:
             if session.ended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
+            session.clear_temporary_credential()
             session.temporary_git_username = credential.git_username
             session.temporary_git_email = credential.git_email
             session.temporary_git_password = credential.git_password
@@ -350,29 +356,48 @@ class GitSessionStore:
             session.credential_claimed = False
             return session
 
-    async def mark_credential_available(
+    async def stage_persistent_credential(
         self,
         service_id: str,
         operator_user_id: str,
+        credential: GitCredential,
     ) -> GitInitializationSession:
-        """标记持久化凭证已可领取；明文凭证仍不进入会话。"""
+        """Keep a requested persistent credential in memory until Git succeeds."""
         resource = await self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
+        validate_credential(session.service_user, credential)
         with self._lock:
             if session.ended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
+            session.clear_temporary_credential()
+            session.staged_persistent_credential = credential
             session.credential_available = True
             session.credential_claimed = False
             return session
+
+    async def get_staged_persistent_credential(
+        self,
+        service_id: str,
+        operator_user_id: str,
+    ) -> Optional[GitCredential]:
+        """Return the unverified credential that can be persisted on success."""
+        resource = await self.resolve_service_resource(service_id, operator_user_id)
+        session = resource.session
+        if session is None:
+            return None
+        with self._lock:
+            if session.ended:
+                return None
+            return session.staged_persistent_credential
 
     async def claim_temporary_credential(
         self,
         service_id: str,
         operator_user_id: str,
     ) -> GitCredential:
-        """原子领取并清除当前会话的临时明文凭证。"""
+        """Atomically claim a staged or temporary credential."""
         resource = await self.resolve_service_resource(service_id, operator_user_id)
         session = resource.session
         if session is None:
@@ -384,6 +409,11 @@ class GitSessionStore:
                 if session.credential_claimed:
                     raise GitCredentialAlreadyClaimedError(session.git_status.value)
                 raise GitCredentialUnavailableError("当前没有可领取的 Git 凭证")
+            if session.staged_persistent_credential is not None:
+                credential = session.staged_persistent_credential
+                session.credential_available = False
+                session.credential_claimed = True
+                return credential
             temporary_type = session.temporary_type
             temporary_git_username = session.temporary_git_username
             temporary_git_email = session.temporary_git_email

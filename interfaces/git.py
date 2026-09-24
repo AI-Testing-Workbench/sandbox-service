@@ -134,9 +134,12 @@ async def report_git_state(
 async def get_git_credential(
     service_id: str,
     operator_user_id: OperatorUserId,
+    response: Response,
 ) -> GitCredentialResponse:
     """领取当前授权资源的 Git 凭证。"""
     credential = await git_service.get_git_credential(service_id, operator_user_id)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Pragma"] = "no-cache"
     return GitCredentialResponse(
         type=cast(Literal["password"], credential.type),
         git_username=credential.git_username,

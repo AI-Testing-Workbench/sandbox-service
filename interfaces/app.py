@@ -102,7 +102,10 @@ def create_app() -> FastAPI:
             "REST 参数校验失败 %s %s: %s",
             request.method,
             request.url.path,
-            [str(e) for e in exc.errors()],
+            [
+                {"loc": error.get("loc"), "type": error.get("type")}
+                for error in exc.errors()
+            ],
         )
         return JSONResponse(
             status_code=400,
