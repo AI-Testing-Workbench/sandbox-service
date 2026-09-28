@@ -30,7 +30,7 @@ class Base(DeclarativeBase):
 
 
 class Container(Base):
-    """`containers` 容器业务数据（含 Gitee 仓库地址）。"""
+    """`containers` 容器业务数据（含码云仓库地址）。"""
 
     __tablename__ = "containers"
     __table_args__ = (
@@ -67,7 +67,7 @@ class Container(Base):
 
 
 class GitCredentialRow(Base):
-    """`git_credentials` 用户级 Git 密码凭证（密码列保存密文）。"""
+    """`git_credentials` 用户级码云密码凭证（密码列保存密文）。"""
 
     __tablename__ = "git_credentials"
     __table_args__ = (
@@ -77,7 +77,7 @@ class GitCredentialRow(Base):
         ),
     )
 
-    # 字段顺序是跨软件 Git 凭证设计报告 §2.1 的数据库合同。
+    # 字段顺序遵循 `work/Git 凭证设计报告.md` §2.1 的数据库合同。
     user_id: Mapped[str] = mapped_column(Text, primary_key=True)
     type: Mapped[str] = mapped_column(Text, nullable=False)
     git_username: Mapped[str] = mapped_column(Text, nullable=False)

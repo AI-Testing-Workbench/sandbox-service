@@ -176,7 +176,7 @@ def _authorized(request: Request) -> bool:
 
 
 def _app_error_content(exc: AppError) -> dict[str, str]:
-    """构造统一错误响应；Git 凭证 409 可额外携带详细状态。"""
+    """构造统一错误响应；码云凭证 409 可额外携带详细状态。"""
     content = {"code": exc.code, "message": exc.message}
     git_status = getattr(exc, "git_status", None)
     if isinstance(git_status, str):

@@ -1,10 +1,10 @@
 """
-Git 凭证加密基础设施（Git 凭证设计报告 §2.4）。
+码云凭证加密基础设施（`work/Git 凭证设计报告.md` §2.4）。
 
-- 使用 AES-256-GCM 加密用户 Git 密码；每次加密生成独立随机 nonce。
+- 使用 AES-256-GCM 加密用户码云密码；每次加密生成独立随机 nonce。
 - 密钥默认位于数据库文件同目录的 `git_credentials.key`。
-- 启动时校验 settings 中的测试原文/密文及所有历史 Git 凭证，校验失败即阻止启动。
-- 本模块不记录密钥、测试数据或 Git 密码。
+- 启动时校验 settings 中的测试原文/密文及所有历史码云凭证，校验失败即阻止启动。
+- 本模块不记录密钥、测试数据或码云密码。
 """
 
 from __future__ import annotations
@@ -45,15 +45,15 @@ _TEST_PLAINTEXT_SIZE_BYTES = 32
 
 
 class GitCryptoError(RuntimeError):
-    """Git 凭证密钥、密文或启动自检失败。"""
+    """码云凭证密钥、密文或启动自检失败。"""
 
 
 class GitCredentialCipher:
-    """使用单个 AES-256-GCM 密钥执行 Git 凭证加解密。"""
+    """使用单个 AES-256-GCM 密钥执行码云凭证加解密。"""
 
     def __init__(self, key: bytes) -> None:
         if len(key) != _KEY_SIZE_BYTES:
-            raise GitCryptoError("Git 凭证密钥长度非法")
+            raise GitCryptoError("码云凭证密钥长度非法")
         self._key = bytes(key)
         self._aes = AESGCM(self._key)
 
@@ -75,7 +75,7 @@ class GitCredentialCipher:
             except OSError:
                 pass
         except OSError as exc:
-            raise GitCryptoError("Git 凭证密钥文件不可用") from exc
+            raise GitCryptoError("码云凭证密钥文件不可用") from exc
         return cls(key)
 
     def encrypt_bytes(self, plaintext: bytes) -> str:
@@ -87,7 +87,7 @@ class GitCredentialCipher:
     def decrypt_bytes(self, encoded: str) -> bytes:
         """解码并解密凭证密文；任何格式或认证错误都转换为摘要异常。"""
         if not isinstance(encoded, str) or not encoded:
-            raise GitCryptoError("Git 凭证密文无效")
+            raise GitCryptoError("码云凭证密文无效")
         try:
             payload = base64.b64decode(
                 encoded.encode("ascii"),
@@ -95,20 +95,20 @@ class GitCredentialCipher:
                 validate=True,
             )
         except (binascii.Error, UnicodeEncodeError, ValueError) as exc:
-            raise GitCryptoError("Git 凭证密文无效") from exc
+            raise GitCryptoError("码云凭证密文无效") from exc
         if len(payload) < _NONCE_SIZE_BYTES + _TAG_SIZE_BYTES:
-            raise GitCryptoError("Git 凭证密文无效")
+            raise GitCryptoError("码云凭证密文无效")
         nonce = payload[:_NONCE_SIZE_BYTES]
         sealed = payload[_NONCE_SIZE_BYTES:]
         try:
             return self._aes.decrypt(nonce, sealed, None)
         except (InvalidTag, ValueError, TypeError) as exc:
-            raise GitCryptoError("Git 凭证密文无法解密") from exc
+            raise GitCryptoError("码云凭证密文无法解密") from exc
 
     def encrypt(self, plaintext: str) -> str:
         """加密 UTF-8 字符串。"""
         if not isinstance(plaintext, str):
-            raise GitCryptoError("Git 凭证原文类型无效")
+            raise GitCryptoError("码云凭证原文类型无效")
         return self.encrypt_bytes(plaintext.encode("utf-8"))
 
     def decrypt(self, encoded: str) -> str:
@@ -116,7 +116,7 @@ class GitCredentialCipher:
         try:
             return self.decrypt_bytes(encoded).decode("utf-8")
         except UnicodeDecodeError as exc:
-            raise GitCryptoError("Git 凭证明文编码无效") from exc
+            raise GitCryptoError("码云凭证明文编码无效") from exc
 
 
 def get_git_credentials_key_path() -> Path:
@@ -144,10 +144,10 @@ async def initialize_git_credential_crypto(
     *,
     key_path: Optional[str | Path] = None,
 ) -> GitCredentialCipher:
-    """执行 Git 凭证启动自检并返回已加载的加解密器。
+    """执行码云凭证启动自检并返回已加载的加解密器。
 
     首次初始化会在同一事务中写入随机测试原文和密文；任一校验数据缺失、密文无法
-    解密、校验不一致或历史 Git 凭证无法解密时抛出 `GitCryptoError`。
+    解密、校验不一致或历史码云凭证无法解密时抛出 `GitCryptoError`。
     """
     cipher = load_git_credentials_cipher(key_path)
     settings_repo = SettingsRepository(session)
@@ -162,16 +162,16 @@ async def initialize_git_credential_crypto(
             cipher.encrypt(plaintext),
         )
     elif plaintext_row is None or ciphertext_row is None:
-        raise GitCryptoError("Git 凭证密钥校验数据不完整")
+        raise GitCryptoError("码云凭证密钥校验数据不完整")
     else:
         if not plaintext_row.value or not ciphertext_row.value:
-            raise GitCryptoError("Git 凭证密钥校验数据无效")
+            raise GitCryptoError("码云凭证密钥校验数据无效")
         try:
             decrypted = cipher.decrypt(ciphertext_row.value)
         except GitCryptoError as exc:
-            raise GitCryptoError("Git 凭证密钥自检失败") from exc
+            raise GitCryptoError("码云凭证密钥自检失败") from exc
         if decrypted.encode("utf-8") != plaintext_row.value.encode("utf-8"):
-            raise GitCryptoError("Git 凭证密钥自检失败")
+            raise GitCryptoError("码云凭证密钥自检失败")
 
     encrypted_passwords = await session.scalars(
         select(GitCredentialRow.git_password)
@@ -180,6 +180,6 @@ async def initialize_git_credential_crypto(
         try:
             cipher.decrypt(encrypted_password)
         except GitCryptoError as exc:
-            raise GitCryptoError("已有 Git 凭证无法使用当前密钥解密") from exc
+            raise GitCryptoError("已有码云凭证无法使用当前密钥解密") from exc
 
     return cipher

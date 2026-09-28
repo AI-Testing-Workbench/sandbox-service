@@ -1,5 +1,5 @@
 """
-Git 凭证应用能力（Git 凭证设计报告 §2.8、§2.9、§5.5、§5.6）。
+码云凭证应用能力（`work/Git 凭证设计报告.md` §2.8、§2.9、§5.5、§5.6）。
 
 - 应用层负责凭证字段校验和持久化策略选择。
 - 持久化凭证由 AES-GCM 加密后交给 Repository 写入用户级数据库。
@@ -30,7 +30,7 @@ __all__ = [
 
 @dataclass(frozen=True)
 class GitCredential:
-    """当前 Git 凭证；密码禁止出现在对象默认 repr 中。"""
+    """当前码云凭证；密码禁止出现在对象默认 repr 中。"""
 
     type: str
     git_username: str
@@ -43,9 +43,9 @@ def validate_credential(user_id: str, credential: GitCredential) -> None:
     if not isinstance(user_id, str) or not user_id.strip():
         raise InvalidArgumentError("用户 ID 不能为空")
     if not isinstance(credential, GitCredential):
-        raise InvalidArgumentError("Git 凭证参数非法")
+        raise InvalidArgumentError("码云凭证参数非法")
     if credential.type != "password":
-        raise InvalidArgumentError("Git 凭证 type 目前只支持 password")
+        raise InvalidArgumentError("码云凭证 type 目前只支持 password")
     _require_text(credential.git_username, "git_username")
     _allow_empty_text(credential.git_email, "git_email")
     _require_text(credential.git_password, "git_password")
@@ -95,7 +95,7 @@ async def upsert_persisted_credential(
 async def get_persisted_credential(user_id: str) -> GitCredential | None:
     """读取并解密用户级凭证。
 
-    调用方必须先完成 Git 资源与请求用户的绑定校验；本函数不承担 HTTP 授权。
+    调用方必须先完成码云资源与请求用户的绑定校验；本函数不承担 HTTP 授权。
     """
     if not isinstance(user_id, str) or not user_id.strip():
         raise InvalidArgumentError("用户 ID 不能为空")
@@ -110,7 +110,7 @@ async def get_persisted_credential(user_id: str) -> GitCredential | None:
             password = cipher.decrypt(row.git_password)
         except GitCryptoError as exc:
             # 启动自检已覆盖历史密文；再次读取时仍禁止向上层暴露底层密文细节。
-            raise InvalidArgumentError("Git 凭证无法读取") from exc
+            raise InvalidArgumentError("码云凭证无法读取") from exc
         return GitCredential(
             type=row.type,
             git_username=row.git_username,

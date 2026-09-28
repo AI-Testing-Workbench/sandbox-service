@@ -50,14 +50,14 @@ class GitReportResponse(BaseModel):
 
 
 class GitCredentialSubmitRequest(BaseModel):
-    """Git password 类型凭证提交请求"""
+    """password 类型码云凭证提交请求"""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["password"] = Field(description="凭证类型")
-    git_username: str = Field(min_length=1, description="Git 用户名")
-    git_email: str = Field(description="Git 邮箱 (可选)")
-    git_password: str = Field(description="Git 密码；空值由业务层解释为取消")
+    git_username: str = Field(min_length=1, description="码云用户名")
+    git_email: str = Field(description="码云邮箱 (可选)")
+    git_password: str = Field(description="码云密码；空值由业务层解释为取消")
     persist: bool = Field(description="是否写入数据库")
 
 
@@ -65,9 +65,9 @@ class GitCredentialResponse(BaseModel):
     """授权凭证领取响应"""
 
     type: Literal["password"] = Field(description="凭证类型")
-    git_username: str = Field(description="Git 用户名")
-    git_email: str = Field(description="Git 邮箱")
-    git_password: str = Field(description="解密后的 Git 密码")
+    git_username: str = Field(description="码云用户名")
+    git_email: str = Field(description="码云邮箱")
+    git_password: str = Field(description="解密后的码云密码")
 
 
 class GitCredentialConflictResponse(BaseModel):
@@ -82,7 +82,7 @@ OperatorUserId = Annotated[str | None, Depends(get_operator_user_id)]
 
 router = APIRouter(
     prefix="/git",
-    tags=["Git 凭证 API"],
+    tags=["码云凭证 API"],
     responses={403: {"model": ErrorResponse, "description": "用户被禁止"}},
 )
 
@@ -136,7 +136,7 @@ async def get_git_credential(
     operator_user_id: OperatorUserId,
     response: Response,
 ) -> GitCredentialResponse:
-    """领取当前授权资源的 Git 凭证。"""
+    """领取当前授权资源的码云凭证。"""
     credential = await git_service.get_git_credential(service_id, operator_user_id)
     response.headers["Cache-Control"] = "no-store"
     response.headers["Pragma"] = "no-cache"
@@ -159,7 +159,7 @@ async def submit_git_credential(
     request: GitCredentialSubmitRequest,
     operator_user_id: OperatorUserId,
 ) -> Response:
-    """提交 Git 凭证；响应不返回密码。"""
+    """提交码云凭证；响应不返回密码。"""
     await git_service.submit_git_credential(
         service_id,
         operator_user_id,

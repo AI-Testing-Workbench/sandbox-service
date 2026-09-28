@@ -5,8 +5,8 @@
 `blacklist`（内置用户黑名单，C58）、
 `volume_paths`（FileBrowser 卷路径规划，C58）、
 `volume_storage`（FileBrowser 卷目录准备与回滚，C58）、
-`container`（容器管理，T6）、`git_credentials`（Git 凭证，C53）、
-`git_sessions`（Git 初始化内存会话，C53）、`git_api`（Git API 应用服务，C53）。
+`container`（容器管理，T6）、`git_credentials`（码云凭证，C53）、
+`git_sessions`（Git 初始化内存会话，C53）、`git_api`（码云凭证 API 应用服务，C53）。
 """
 
 from __future__ import annotations

@@ -90,13 +90,13 @@ class ContainerNotFoundError(AppError):
 
 
 class GitResourceNotFoundError(ContainerNotFoundError):
-    """Git API 资源 ID 不存在（HTTP 404）。"""
+    """码云凭证 API 资源 ID 不存在（HTTP 404）。"""
 
     code = "git_resource_not_found"
 
 
 class GitResourceUserMismatchError(UnauthorizedError):
-    """Git API 请求用户与资源绑定用户不匹配（HTTP 401）。"""
+    """码云凭证 API 请求用户与资源绑定用户不匹配（HTTP 401）。"""
 
     code = "git_resource_user_mismatch"
 
@@ -140,7 +140,7 @@ class GitCredentialAlreadyClaimedError(BusinessConflictError):
 
     def __init__(self, git_status: str) -> None:
         self.git_status = git_status
-        super().__init__("临时 Git 凭证已经领取")
+        super().__init__("临时码云凭证已经领取")
 
 
 class GitCredentialConflictError(BusinessConflictError):
@@ -150,7 +150,7 @@ class GitCredentialConflictError(BusinessConflictError):
 
     def __init__(self, git_status: str) -> None:
         self.git_status = git_status
-        super().__init__("Git 凭证当前不可用")
+        super().__init__("码云凭证当前不可用")
 
 
 class LimitReachedError(BusinessConflictError):

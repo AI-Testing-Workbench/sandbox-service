@@ -772,11 +772,11 @@ def _validate_required(params: CreateContainerParams) -> None:
 
 
 def _normalise_optional_gitee_value(value: Optional[str]) -> str:
-    """将未填写或仅含空白的 Gitee 字段统一为空字符串。"""
+    """将未填写或仅含空白的码云字段统一为空字符串。"""
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise InvalidArgumentError("Gitee 字段必须为字符串")
+        raise InvalidArgumentError("码云字段必须为字符串")
     if not value.strip():
         return ""
     return value

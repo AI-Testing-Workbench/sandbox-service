@@ -10,7 +10,7 @@
 - 各仓库特有方法见类内说明。
 - 创建限制（模式/数量）由应用层在**同一事务内**原子校验（变更 #3）；本层不设唯一约束兜底。
 - 不携带运行时状态（OpenSandbox 读到状态不落库，见 v4 §6.1 原则）。
-- Git 凭证 Repository 只保存密文；加密、解密和业务字段校验由 application 层负责。
+- 码云凭证 Repository 只保存密文；加密、解密和业务字段校验由 application 层负责。
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ class ContainerRepository:
         return await self._session.get(Container, container_id)
 
     async def get_by_service_id(self, service_id: str) -> Optional[Container]:
-        """按持久化 Git service_id 查询容器记录。"""
+        """按持久化码云 service_id 查询容器记录。"""
         return await self._session.scalar(
             select(Container).where(Container.service_id == service_id)
         )
