@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import posixpath
 from dataclasses import dataclass
-from typing import Optional
 
 from infra.opensandbox.types import SandboxVolume
 
@@ -51,8 +50,6 @@ class VolumePathPlan:
     reusable_paths: tuple[str, ...]
     exclusive_paths: tuple[str, ...]
     cleanup_paths: tuple[str, ...]
-    container_id: Optional[str] = None
-    container_marker_path: Optional[str] = None
 
     @property
     def mount_manifest(self) -> tuple[str, ...]:
@@ -63,17 +60,10 @@ class VolumePathPlan:
 def build_volume_path_plan(
     user_id: str,
     service_id: str,
-    container_id: Optional[str] = None,
 ) -> VolumePathPlan:
-    """生成用户/会话目录、挂载目录、PVC 子路径和清理路径。
-
-    `container_id` 在 OpenSandbox 创建成功后才可用；未提供时不规划容器 ID
-    零字节标记文件。所有路径使用 POSIX 语义，不依赖宿主机操作系统。
-    """
+    """生成用户/会话目录、挂载目录、PVC 子路径和清理路径。"""
     _validate_path_segment(user_id, "user_id")
     _validate_path_segment(service_id, "service_id")
-    if container_id is not None:
-        _validate_path_segment(container_id, "container_id")
 
     user_path = f"/{user_id}"
     service_path = posixpath.join(user_path, service_id)
@@ -94,11 +84,6 @@ def build_volume_path_plan(
             if parent_path not in directory_paths:
                 directory_paths.append(parent_path)
 
-    marker_path = (
-        posixpath.join(service_path, container_id)
-        if container_id is not None
-        else None
-    )
     return VolumePathPlan(
         user_id=user_id,
         service_id=service_id,
@@ -114,8 +99,6 @@ def build_volume_path_plan(
             *(item.filebrowser_path for item in mount_paths),
         ),
         cleanup_paths=(service_path, user_path),
-        container_id=container_id,
-        container_marker_path=marker_path,
     )
 
 

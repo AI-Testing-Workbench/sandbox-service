@@ -154,6 +154,7 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
 class AdminContainerResponse(ContainerRuntimeResponse):
     """完整云端沙箱信息"""
 
+    container_id: str = Field(description="云端沙箱 容器 ID")
     image: str = Field(description="完整镜像名称")
     user_id: str = Field(description="用户 ID")
     gitee_user: str = Field(description="码云用户名")
@@ -170,7 +171,8 @@ class AdminContainerResponse(ContainerRuntimeResponse):
 class AdminCreateContainerResponse(BaseModel):
     """管理员创建云端沙箱响应"""
 
-    container_id: str = Field(description="云端沙箱 ID")
+    container_id: str = Field(description="云端沙箱 容器 ID")
+    service_id: str = Field(description="云端沙箱 服务 ID")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
         description="云端沙箱类型: testagent_cloud / autotest_cloud",
@@ -196,7 +198,6 @@ class AdminCreateContainerResponse(BaseModel):
     authorize_general_account: bool = Field(description="是否授权通用码云账户登录")
     deleted_at: Optional[str] = Field(default=None, description="业务删除时间，未业务删除时为空")
     business_deleted: bool = Field(description="是否已业务删除")
-    service_id: str = Field(description="云端沙箱初始化会话 ID")
 
 
 class AdminContainerListResponse(BaseModel):
@@ -206,9 +207,9 @@ class AdminContainerListResponse(BaseModel):
 
 
 class OrphanContainerListResponse(BaseModel):
-    """孤儿云端沙箱 ID 列表响应"""
+    """孤儿云端沙箱 容器 ID 列表响应"""
 
-    container_ids: list[str] = Field(description="云端沙箱 ID 列表")
+    container_ids: list[str] = Field(description="云端沙箱 容器 ID 列表")
 
 
 class OrphanContainerDeleteRequest(BaseModel):
@@ -218,7 +219,7 @@ class OrphanContainerDeleteRequest(BaseModel):
 
     container_ids: list[str] = Field(
         min_length=1,
-        description="云端沙箱 ID 列表",
+        description="云端沙箱 容器 ID 列表",
     )
 
 

@@ -114,9 +114,10 @@ async def expire_containers() -> list[str]:
                 except (TypeError, ValueError):
                     logger.exception("业务删除时间字段非法，跳过容器: %s", container_id)
                     continue
+                service_id = current.service_id
             # noinspection broad-exception
             try:
-                await _container.business_delete(container_id)
+                await _container.business_delete(service_id)
                 expired.append(container_id)
             except OpenSandboxError as exc:
                 # OpenSandbox 适配层已记录底层原因；这里不再重复打印 traceback。

@@ -72,10 +72,11 @@ async def create_container(request: AdminCreateContainerRequest) -> AdminCreateC
         )
     )
     view = _container_response(
-        await container_service.get_admin_container(created.container_id)
+        await container_service.get_admin_container(created.service_id)
     )
     return AdminCreateContainerResponse(
-        **view.model_dump(exclude={"git_fin_status"}),
+        **view.model_dump(exclude={"git_fin_status", "service_id", "container_id"}),
+        container_id=created.container_id,
         service_id=created.service_id,
     )
 
@@ -95,7 +96,7 @@ async def list_containers() -> AdminContainerListResponse:
     )
 
 
-# 静态 limit 路径必须声明在动态 container_id 路径之前。
+# 静态 limit 路径必须声明在动态 service_id 路径之前。
 @router.get(
     "/limit",
     response_model=ContainerLimitResponse,
@@ -123,7 +124,7 @@ async def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitR
     )
 
 
-# 静态孤儿容器路径必须声明在动态 container_id 路径之前。
+# 静态孤儿容器路径必须声明在动态 service_id 路径之前。
 @router.get(
     "/orphans",
     response_model=OrphanContainerListResponse,
@@ -161,66 +162,67 @@ async def delete_k8s_pods(request: PodDeleteRequest) -> Response:
 
 
 @router.get(
-    "/{container_id}",
+    "/{service_id}",
     response_model=AdminContainerResponse,
     responses=api_responses("成功", 200, 404, 502),
 )
-async def get_container(container_id: str) -> AdminContainerResponse:
+async def get_container(service_id: str) -> AdminContainerResponse:
     """查询指定云端沙箱运行状态，包括业务删除云端沙箱。"""
-    return _container_response(await container_service.get_admin_container(container_id))
+    return _container_response(await container_service.get_admin_container(service_id))
 
 
 @router.get(
-    "/{container_id}/log",
+    "/{service_id}/log",
     response_model=None,
     response_class=PlainTextResponse,
     responses=api_responses("成功", 200, 404, 502),
 )
-async def get_container_log(container_id: str) -> PlainTextResponse:
+async def get_container_log(service_id: str) -> PlainTextResponse:
     """获取指定云端沙箱最新日志。"""
-    return PlainTextResponse(content=await container_service.get_container_logs(container_id))
+    return PlainTextResponse(content=await container_service.get_container_logs(service_id))
 
 
 register_container_action_routes(router, operation_id_prefix="admin")
 
 
 @router.post(
-    "/{container_id}/permanent-delete",
+    "/{service_id}/permanent-delete",
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 404, 502),
 )
-async def permanent_delete(container_id: str) -> Response:
+async def permanent_delete(service_id: str) -> Response:
     """物理删除指定云端沙箱。"""
-    await container_service.permanent_delete(container_id)
+    await container_service.permanent_delete(service_id)
     return Response(status_code=204)
 
 
 @router.post(
-    "/{container_id}/expiration",
+    "/{service_id}/expiration",
     response_model=ExpirationResponse,
     status_code=200,
     openapi_extra={"requestBody": {"description": "云端沙箱过期时间 (小时)。"}},
     responses=api_responses("成功", 200, 400, 404, 502),
 )
-async def set_expiration(container_id: str, request: ExpirationRequest) -> ExpirationResponse:
+async def set_expiration(service_id: str, request: ExpirationRequest) -> ExpirationResponse:
     """设置指定云端沙箱过期时间，0 表示永不过期。"""
-    view = await container_service.set_expiration(container_id, request.expiration_hours)
-    return ExpirationResponse(container_id=view.container_id, expires_at=view.expires_at)
+    view = await container_service.set_expiration(service_id, request.expiration_hours)
+    return ExpirationResponse(service_id=view.service_id, expires_at=view.expires_at)
 
 
 @router.post(
-    "/{container_id}/restore",
+    "/{service_id}/restore",
     status_code=204,
     responses=api_responses("成功 (无内容)", 204, 400, 404, 409, 502),
 )
-async def restore(container_id: str, request: ExpirationRequest) -> Response:
+async def restore(service_id: str, request: ExpirationRequest) -> Response:
     """恢复指定业务删除云端沙箱。"""
-    await container_service.restore(container_id, request.expiration_hours)
+    await container_service.restore(service_id, request.expiration_hours)
     return Response(status_code=204)
 
 
 def _container_response(view: container_service.AdminContainerView) -> AdminContainerResponse:
     return AdminContainerResponse(
+        service_id=view.service_id,
         container_id=view.container_id,
         type=view.container_type,
         image=view.image,

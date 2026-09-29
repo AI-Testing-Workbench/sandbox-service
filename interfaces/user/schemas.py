@@ -51,8 +51,7 @@ class CreateContainerRequest(ContainerCreateRequestBase):
 
 
 class CreateContainerResponse(BaseModel):
-    container_id: str = Field(description="云端沙箱 ID")
-    service_id: str = Field(description="本次 Git 初始化会话 ID")
+    service_id: str = Field(description="云端沙箱 ID")
     type: str = Field(default="testagent_cloud", description="云端沙箱类型: testagent_cloud / autotest_cloud")
     novnc_url: str | None = Field(
         default=None,
@@ -70,11 +69,11 @@ class ContainerStatusResponse(ContainerRuntimeResponse):
 
 
 class ContainerStatusListResponse(BaseModel):
-    containers: list[ContainerStatusResponse] = Field(description="云端沙箱状态列表（不含业务已删除云端沙箱）")
+    containers: list[ContainerStatusResponse] = Field(description="云端沙箱状态列表")
 
 
 class ContainerIdsResponse(BaseModel):
-    container_ids: list[str] = Field(description="云端沙箱 ID 列表")
+    service_ids: list[str] = Field(description="云端沙箱 ID 列表")
 
 
 class MapContainerRequest(BaseModel):
@@ -89,7 +88,7 @@ class MapContainerRequest(BaseModel):
 class MapContainerResponse(BaseModel):
     """用户/云端沙箱映射响应。"""
 
-    container_id: str = Field(description="云端沙箱 ID")
+    container_id: str = Field(description="云端沙箱 容器 ID")
 
 
 class AdminCheckRequest(BaseModel):

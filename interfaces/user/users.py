@@ -48,7 +48,7 @@ async def check_admin(request: AdminCheckRequest) -> AdminCheckResponse:
     responses=api_responses("成功", 200, 400, 403, 404),
 )
 async def map_container(request: MapContainerRequest) -> MapContainerResponse:
-    """查询云端沙箱会话 ID 对应的云端沙箱 ID。"""
+    """查询云端沙箱服务 ID 对应的容器 ID。"""
     return MapContainerResponse(
         container_id=await container.map_container_id(request.user_id, request.service_id)
     )

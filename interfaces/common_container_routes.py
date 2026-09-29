@@ -26,28 +26,28 @@ def register_container_action_routes(
     _register_action(
         router,
         action=container_service.start,
-        path="/{container_id}/start",
+        path="/{service_id}/start",
         operation_id=f"{operation_id_prefix}_start_container",
         summary="Start Container",
     )
     _register_action(
         router,
         action=container_service.stop,
-        path="/{container_id}/stop",
+        path="/{service_id}/stop",
         operation_id=f"{operation_id_prefix}_stop_container",
         summary="Stop Container",
     )
     _register_action(
         router,
         action=container_service.restart,
-        path="/{container_id}/restart",
+        path="/{service_id}/restart",
         operation_id=f"{operation_id_prefix}_restart_container",
         summary="Restart Container",
     )
     _register_action(
         router,
         action=container_service.business_delete,
-        path="/{container_id}/delete",
+        path="/{service_id}/delete",
         operation_id=f"{operation_id_prefix}_delete_container",
         summary="Delete Container",
     )
@@ -69,6 +69,6 @@ def _register_action(
         summary=summary,
         responses=api_responses("成功 (无内容)", 204, 403, 404, 409, 502),
     )
-    async def action_endpoint(container_id: str) -> Response:
-        await action(container_id)
+    async def action_endpoint(service_id: str) -> Response:
+        await action(service_id)
         return Response(status_code=204)

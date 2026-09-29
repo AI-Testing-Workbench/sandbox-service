@@ -1,7 +1,7 @@
 """
 FileBrowser Quantum API 客户端。
 
-本模块只封装卷生命周期所需的资源查询、目录/空文件创建、目录子项查询和递归删除，
+本模块只封装卷生命周期所需的资源查询、目录创建、目录子项查询和递归删除，
 不提供通用反向代理能力。
 """
 
@@ -173,17 +173,6 @@ class FileBrowserClient:
             _RESOURCES_ENDPOINT,
             path=path,
             is_directory=True,
-            data=b"",
-            retryable=False,
-        )
-
-    def create_empty_file(self, path: str) -> None:
-        """创建零字节文件；冲突会抛出 `FileBrowserConflictError`。"""
-        self._request(
-            "POST",
-            _RESOURCES_ENDPOINT,
-            path=path,
-            is_directory=False,
             data=b"",
             retryable=False,
         )

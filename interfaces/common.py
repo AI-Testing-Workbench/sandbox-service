@@ -49,7 +49,7 @@ class ContainerCreateRequestBase(BaseModel):
 class ContainerRuntimeResponse(BaseModel):
     """云端沙箱基本属性字段"""
 
-    container_id: str = Field(description="云端沙箱 ID")
+    service_id: str = Field(description="云端沙箱 ID")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
         description="云端沙箱类型：testagent_cloud / autotest_cloud",
@@ -94,7 +94,7 @@ class ExpirationRequest(BaseModel):
 class ExpirationResponse(BaseModel):
     """设置云端沙箱过期时间响应"""
 
-    container_id: str = Field(description="云端沙箱 ID")
+    service_id: str = Field(description="云端沙箱 ID")
     expires_at: Optional[str] = Field(description="预计业务删除时间，云端沙箱永不过期时为空")
 
 

@@ -31,7 +31,7 @@ router = APIRouter(prefix="/user/containers", tags=["用户 API"])
 
 def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusResponse:
     return ContainerStatusResponse(
-        container_id=view.container_id,
+        service_id=view.service_id,
         type=view.container_type,
         status=view.status.value,
         git_fin_status=view.git_fin_status,
@@ -67,9 +67,8 @@ async def create_container(request: CreateContainerRequest) -> CreateContainerRe
         )
     )
     # 创建成功后实时查询一次端点与启动时间，查询失败按外部依赖错误返回。
-    view = await container.get_status(created.container_id)
+    view = await container.get_status(created.service_id)
     return CreateContainerResponse(
-        container_id=created.container_id,
         service_id=created.service_id,
         type=created.container_type.value,
         status=created.status.value,
@@ -100,7 +99,7 @@ async def query_container_ids(
         gitee_branch=gitee_branch,
         container_type=container_type,
     )
-    return ContainerIdsResponse(container_ids=ids)
+    return ContainerIdsResponse(service_ids=ids)
 
 
 @router.get(
@@ -127,13 +126,13 @@ async def query_container_statuses(
 
 
 @router.get(
-    "/{container_id}",
+    "/{service_id}",
     response_model=ContainerStatusResponse,
     responses=api_responses("成功", 200, 403, 404, 502),
 )
-async def get_container_status(container_id: str) -> ContainerStatusResponse:
+async def get_container_status(service_id: str) -> ContainerStatusResponse:
     """查询指定云端沙箱运行状态。"""
-    return _to_status_response(await container.get_status(container_id))
+    return _to_status_response(await container.get_status(service_id))
 
 
 register_container_action_routes(router, operation_id_prefix="user")
