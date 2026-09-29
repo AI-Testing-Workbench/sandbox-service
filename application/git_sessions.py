@@ -397,6 +397,11 @@ class GitSessionStore:
             session.temporary_type = credential.type
             session.credential_available = True
             session.credential_claimed = False
+            if session.git_status in (
+                GitStatus.CREDENTIAL_REQUIRED,
+                GitStatus.CREDENTIAL_REJECTED,
+            ):
+                session.git_status = GitStatus.PROCESSING
             return session
 
     async def stage_persistent_credential(
@@ -418,6 +423,11 @@ class GitSessionStore:
             session.staged_persistent_credential = credential
             session.credential_available = True
             session.credential_claimed = False
+            if session.git_status in (
+                GitStatus.CREDENTIAL_REQUIRED,
+                GitStatus.CREDENTIAL_REJECTED,
+            ):
+                session.git_status = GitStatus.PROCESSING
             return session
 
     async def get_staged_persistent_credential(
