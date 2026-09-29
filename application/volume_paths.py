@@ -21,6 +21,7 @@ __all__ = [
 FILEBROWSER_MOUNT_PATHS: list[str] = [
     "/app",
     "/root/.git-helper",
+    "/root/.local",
 ]
 
 
