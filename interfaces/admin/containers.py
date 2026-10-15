@@ -200,11 +200,11 @@ async def permanent_delete(service_id: str) -> Response:
     "/{service_id}/expiration",
     response_model=ExpirationResponse,
     status_code=200,
-    openapi_extra={"requestBody": {"description": "云端沙箱过期时间 (小时)。"}},
+    openapi_extra={"requestBody": {"description": "云端沙箱创建后的剩余过期时间 (小时)。"}},
     responses=api_responses("成功", 200, 400, 404, 502),
 )
 async def set_expiration(service_id: str, request: ExpirationRequest) -> ExpirationResponse:
-    """设置指定云端沙箱过期时间，0 表示永不过期。"""
+    """设置指定云端沙箱创建后的剩余过期时间，0 表示永不过期。"""
     view = await container_service.set_expiration(service_id, request.expiration_hours)
     return ExpirationResponse(service_id=view.service_id, expires_at=view.expires_at)
 

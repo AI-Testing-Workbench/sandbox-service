@@ -77,7 +77,7 @@ class ContainerRuntimeResponse(BaseModel):
 
 
 class ExpirationRequest(BaseModel):
-    """设置云端沙箱过期时间请求"""
+    """设置云端沙箱创建后的剩余过期时间请求"""
 
     model_config = ConfigDict(
         json_schema_extra={
@@ -87,15 +87,15 @@ class ExpirationRequest(BaseModel):
 
     expiration_hours: int = Field(
         ge=0,
-        description="云端沙箱过期时间，0 表示永不过期",
+        description="云端沙箱创建后的剩余过期时间，0 表示永不过期",
     )
 
 
 class ExpirationResponse(BaseModel):
-    """设置云端沙箱过期时间响应"""
+    """设置云端沙箱创建后的剩余过期时间响应"""
 
     service_id: str = Field(description="云端沙箱 ID")
-    expires_at: Optional[str] = Field(description="预计业务删除时间，云端沙箱永不过期时为空")
+    expires_at: Optional[str] = Field(description="预计创建后的业务删除时间，云端沙箱永不过期时为空")
 
 
 _ERROR_LABELS = {

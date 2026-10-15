@@ -145,7 +145,7 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
     expiration_hours: Optional[int] = Field(
         default=settings.container_default_expiration_hours,
         ge=0,
-        description="云端沙箱过期时间，0 表示永不过期",
+        description="云端沙箱创建后的剩余过期时间，0 表示永不过期",
     )
     cpu: Optional[float] = Field(default=None, gt=0, description="CPU 核数")
     memory: Optional[int] = Field(default=None, gt=0, description="内存大小，单位 Gi")
