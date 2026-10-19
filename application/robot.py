@@ -17,7 +17,6 @@ __all__ = [
 
 @dataclass(frozen=True)
 class GiteeUrlHistoryView:
-    id: int
     gitee_url: str
     gitee_branch: str
 
@@ -49,7 +48,6 @@ async def list_gitee_urls(user_id: str) -> list[GiteeUrlHistoryView]:
         rows = await GiteeUrlHistoryRepository(session).list_for_user(user_id)
         return [
             GiteeUrlHistoryView(
-                id=row.id,
                 gitee_url=row.gitee_url,
                 gitee_branch=row.gitee_branch,
             )

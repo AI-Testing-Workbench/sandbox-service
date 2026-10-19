@@ -24,7 +24,6 @@ class GiteeUrlsRequest(BaseModel):
 
 
 class GiteeUrlHistoryItem(BaseModel):
-    id: int
     gitee_url: str
     gitee_branch: str
 
@@ -59,7 +58,6 @@ async def list_gitee_urls(request: GiteeUrlsRequest) -> GiteeUrlsResponse:
     return GiteeUrlsResponse(
         gitee_urls=[
             GiteeUrlHistoryItem(
-                id=row.id,
                 gitee_url=row.gitee_url,
                 gitee_branch=row.gitee_branch,
             )
