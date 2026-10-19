@@ -76,7 +76,6 @@ from infra.orm import Container as ContainerRow
 from infra.repositories import (
     AdminUserRepository,
     ContainerRepository,
-    GiteeUrlHistoryRepository,
     WhitelistUserRepository,
 )
 from application.git_sessions import get_git_session_store
@@ -440,12 +439,6 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
     gitee_user = _normalise_optional_gitee_value(params.gitee_user)
     gitee_repository = _normalise_optional_gitee_value(params.gitee_repository)
-    history_url = (
-        f"{gitee_url.rstrip('/')}/{gitee_user}/{gitee_repository}"
-        if gitee_url and gitee_user and gitee_repository
-        else ""
-    )
-    history_branch = params.gitee_branch or ""
     image = await _resolve_image(params)
     # 未指定时长时，使用创建后自动业务删除的默认有效时长。
     expiration_hours = params.expiration_hours if params.expiration_hours is not None \
@@ -619,38 +612,6 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             except Exception:  # noqa: BLE001
                 logger.exception("容器未能启动且数据库记录清理失败: %s", container_id)
             _raise_backend_service_error("等待容器运行", exc)
-
-        if history_url:
-            try:
-                async with session_scope() as session:
-                    await GiteeUrlHistoryRepository(session).replace(
-                        params.user_id,
-                        history_url,
-                        history_branch,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("创建容器后保存码云地址历史失败: %s", container_id)
-                try:
-                    await _cleanup_created_container(
-                        container_id,
-                        service_id,
-                        prepared_volume_directories,
-                        volume_client,
-                    )
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "码云地址历史写入失败后的容器资源回收异常: %s",
-                        container_id,
-                    )
-                try:
-                    async with session_scope() as session:
-                        await ContainerRepository(session).delete(container_id)
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "码云地址历史写入失败后的容器记录清理失败: %s",
-                        container_id,
-                    )
-                raise ExternalDependencyError("保存码云地址历史失败") from exc
 
         return CreatedContainer(
             container_id=container_id,

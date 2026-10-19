@@ -43,7 +43,7 @@ from domain.models import (
     is_git_final_status,
 )
 from infra.db import session_scope
-from infra.repositories import ContainerRepository
+from infra.repositories import ContainerRepository, GiteeUrlHistoryRepository
 
 logger = logging.getLogger(__name__)
 
@@ -147,11 +147,11 @@ async def report_git_status(
                 operator_user_id,
             )
 
+        history_entry: Optional[tuple[str, str, str]] = None
         try:
             async with session_scope() as db_session:
-                updated, existing_status = await ContainerRepository(
-                    db_session
-                ).set_git_fin_status_if_unset(
+                repository = ContainerRepository(db_session)
+                updated, existing_status = await repository.set_git_fin_status_if_unset(
                     container_id,
                     final_status_value,
                 )
@@ -179,6 +179,23 @@ async def report_git_status(
                         resource.user_id,
                         staged_credential,
                     )
+                if final_status is GitFinalStatus.INITIALIZED and updated:
+                    container = await repository.get(container_id)
+                    if container is None:
+                        raise GitResourceNotFoundError("云端沙箱记录不存在")
+                    if (
+                        container.gitee_url
+                        and container.gitee_user
+                        and container.gitee_repository
+                    ):
+                        history_entry = (
+                            container.user_id,
+                            (
+                                f"{container.gitee_url.rstrip('/')}/"
+                                f"{container.gitee_user}/{container.gitee_repository}"
+                            ),
+                            container.gitee_branch or "",
+                        )
         except (BusinessConflictError, GitResourceNotFoundError):
             raise
         except Exception as exc:  # noqa: BLE001
@@ -187,6 +204,16 @@ async def report_git_status(
         if idempotent or updated:
             current_status = final_status.value
             _finish_git_session(store, service_id, final_status)
+        if history_entry is not None:
+            # noinspection broad-exception
+            try:
+                async with session_scope() as db_session:
+                    await GiteeUrlHistoryRepository(db_session).replace(*history_entry)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Git 初始化成功，但保存码云地址历史失败: service_id=%s",
+                    service_id,
+                )
         return GitStatus(final_status.value)
     except Exception as exc:  # noqa: BLE001
         logger.error(
