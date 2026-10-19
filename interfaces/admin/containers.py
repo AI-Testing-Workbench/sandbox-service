@@ -223,6 +223,7 @@ async def restore(service_id: str, request: ExpirationRequest) -> Response:
 def _container_response(view: container_service.AdminContainerView) -> AdminContainerResponse:
     return AdminContainerResponse(
         service_id=view.service_id,
+        api_token=view.api_token,
         container_id=view.container_id,
         type=view.container_type,
         image=view.image,

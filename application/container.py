@@ -76,6 +76,7 @@ from infra.orm import Container as ContainerRow
 from infra.repositories import (
     AdminUserRepository,
     ContainerRepository,
+    GiteeUrlHistoryRepository,
     WhitelistUserRepository,
 )
 from application.git_sessions import get_git_session_store
@@ -313,6 +314,7 @@ class ContainerStatusView:
     gitee_user: str = ""
     gitee_repository: str = ""
     gitee_url: str = ""
+    api_token: str = ""
     novnc_url: Optional[str] = None
     git_fin_status: str = "pending"
 
@@ -336,6 +338,7 @@ class AdminContainerView:
     gitee_repository: str
     gitee_branch: Optional[str]
     gitee_url: str
+    api_token: str
     created_at: str
     expiration_hours: int
     authorize_general_account: bool
@@ -414,6 +417,7 @@ def _now_iso() -> str:
 # ---------------------------------------------------------------------------
 # 容器创建（T6.1 + T6.2）
 # ---------------------------------------------------------------------------
+# noinspection broad-exception
 async def create_container(params: CreateContainerParams) -> CreatedContainer:
     """创建并自动启动容器（v4 §11.1）。
 
@@ -436,6 +440,12 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
     gitee_user = _normalise_optional_gitee_value(params.gitee_user)
     gitee_repository = _normalise_optional_gitee_value(params.gitee_repository)
+    history_url = (
+        f"{gitee_url.rstrip('/')}/{gitee_user}/{gitee_repository}"
+        if gitee_url and gitee_user and gitee_repository
+        else ""
+    )
+    history_branch = params.gitee_branch or ""
     image = await _resolve_image(params)
     # 未指定时长时，使用创建后自动业务删除的默认有效时长。
     expiration_hours = params.expiration_hours if params.expiration_hours is not None \
@@ -609,6 +619,38 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             except Exception:  # noqa: BLE001
                 logger.exception("容器未能启动且数据库记录清理失败: %s", container_id)
             _raise_backend_service_error("等待容器运行", exc)
+
+        if history_url:
+            try:
+                async with session_scope() as session:
+                    await GiteeUrlHistoryRepository(session).replace(
+                        params.user_id,
+                        history_url,
+                        history_branch,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("创建容器后保存码云地址历史失败: %s", container_id)
+                try:
+                    await _cleanup_created_container(
+                        container_id,
+                        service_id,
+                        prepared_volume_directories,
+                        volume_client,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "码云地址历史写入失败后的容器资源回收异常: %s",
+                        container_id,
+                    )
+                try:
+                    async with session_scope() as session:
+                        await ContainerRepository(session).delete(container_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "码云地址历史写入失败后的容器记录清理失败: %s",
+                        container_id,
+                    )
+                raise ExternalDependencyError("保存码云地址历史失败") from exc
 
         return CreatedContainer(
             container_id=container_id,
@@ -873,6 +915,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         cpu_usage=cpu_usage,
         memory_usage=memory_usage,
         gitee_url=row.gitee_url,
+        api_token=row.api_token,
         gitee_user=row.gitee_user,
         gitee_repository=row.gitee_repository,
     )
@@ -1623,6 +1666,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         container_type=row.container_type,
         user_id=row.user_id,
         gitee_url=row.gitee_url,
+        api_token=row.api_token,
         gitee_user=row.gitee_user,
         gitee_repository=row.gitee_repository,
         gitee_branch=row.gitee_branch,

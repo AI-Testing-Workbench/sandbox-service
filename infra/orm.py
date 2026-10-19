@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import Boolean, CheckConstraint, Index, Integer, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 __all__ = [
@@ -21,6 +21,7 @@ __all__ = [
     "WhitelistUserRow",
     "AdminUserRow",
     "GitCredentialRow",
+    "GiteeUrlHistoryRow",
     "SchemaVersionRow",
 ]
 
@@ -58,6 +59,7 @@ class Container(Base):
     gitee_repository: Mapped[str] = mapped_column(String(128))
     gitee_branch: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     gitee_url: Mapped[str] = mapped_column(String(512), default="")
+    api_token: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     authorize_general_account: Mapped[bool] = mapped_column(Boolean)
     git_fin_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
@@ -83,6 +85,26 @@ class GitCredentialRow(Base):
     git_username: Mapped[str] = mapped_column(Text, nullable=False)
     git_email: Mapped[str] = mapped_column(Text, nullable=False)
     git_password: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class GiteeUrlHistoryRow(Base):
+    """按用户记录最近使用的码云仓库地址与分支。"""
+
+    __tablename__ = "gitee_url_history"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "gitee_url",
+            "gitee_branch",
+            name="uq_gitee_url_history_user_url_branch",
+        ),
+        {"sqlite_autoincrement": True},
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[str] = mapped_column(Text, nullable=False)
+    gitee_url: Mapped[str] = mapped_column(Text, nullable=False)
+    gitee_branch: Mapped[str] = mapped_column(Text, nullable=False, default="")
 
 
 class SettingsRow(Base):

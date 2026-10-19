@@ -32,6 +32,7 @@ router = APIRouter(prefix="/user/containers", tags=["用户 API"])
 def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusResponse:
     return ContainerStatusResponse(
         service_id=view.service_id,
+        api_token=view.api_token,
         type=view.container_type,
         status=view.status.value,
         git_fin_status=view.git_fin_status,
@@ -70,6 +71,7 @@ async def create_container(request: CreateContainerRequest) -> CreateContainerRe
     view = await container.get_status(created.service_id)
     return CreateContainerResponse(
         service_id=created.service_id,
+        api_token=view.api_token,
         type=created.container_type.value,
         status=created.status.value,
         endpoint=view.endpoint,

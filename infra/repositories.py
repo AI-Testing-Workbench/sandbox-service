@@ -17,12 +17,13 @@ from __future__ import annotations
 
 from typing import Optional
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infra.orm import (
     AdminUserRow,
     Container,
+    GiteeUrlHistoryRow,
     GitCredentialRow,
     SettingsRow,
     WhitelistUserRow,
@@ -39,6 +40,7 @@ def _identity_contains(session: AsyncSession, model: type[object], key: str) -> 
 
 __all__ = [
     "ContainerRepository",
+    "GiteeUrlHistoryRepository",
     "SettingsRepository",
     "WhitelistUserRepository",
     "AdminUserRepository",
@@ -65,6 +67,15 @@ class ContainerRepository:
         return await self._session.scalar(
             select(Container).where(Container.service_id == service_id)
         )
+
+    async def update_api_token(self, service_id: str, api_token: str) -> bool:
+        """Set the robot API token for a service ID; return whether it exists."""
+        result = await self._session.execute(
+            update(Container)
+            .where(Container.service_id == service_id)
+            .values(api_token=api_token)
+        )
+        return getattr(result, "rowcount", 0) == 1
 
     async def exists(self, container_id: str) -> bool:
         return await self.get(container_id) is not None
@@ -185,6 +196,45 @@ class ContainerRepository:
             .values(git_fin_status=None)
         )
         return getattr(result, "rowcount", 0) == 1
+
+
+class GiteeUrlHistoryRepository:
+    """`gitee_url_history` table persistence."""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def replace(
+        self,
+        user_id: str,
+        gitee_url: str,
+        gitee_branch: str,
+    ) -> GiteeUrlHistoryRow:
+        """Replace a duplicate entry in the current transaction to refresh its ID."""
+        await self._session.execute(
+            delete(GiteeUrlHistoryRow).where(
+                GiteeUrlHistoryRow.user_id == user_id,
+                GiteeUrlHistoryRow.gitee_url == gitee_url,
+                GiteeUrlHistoryRow.gitee_branch == gitee_branch,
+            )
+        )
+        row = GiteeUrlHistoryRow(
+            user_id=user_id,
+            gitee_url=gitee_url,
+            gitee_branch=gitee_branch or "",
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
+
+    async def list_for_user(self, user_id: str) -> list[GiteeUrlHistoryRow]:
+        """Return a user's history from most recently inserted to oldest."""
+        rows = await self._session.scalars(
+            select(GiteeUrlHistoryRow)
+            .where(GiteeUrlHistoryRow.user_id == user_id)
+            .order_by(GiteeUrlHistoryRow.id.desc())
+        )
+        return list(rows)
 
 
 class SettingsRepository:

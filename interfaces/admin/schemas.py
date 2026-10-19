@@ -189,6 +189,7 @@ class AdminCreateContainerResponse(BaseModel):
     memory_usage: Optional[float] = Field(default=None, description="云端沙箱内存使用率")
     image: str = Field(description="完整镜像名称")
     user_id: str = Field(description="用户 ID")
+    api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
     gitee_user: str = Field(description="码云用户名")
     gitee_repository: str = Field(description="码云仓库")
     gitee_branch: Optional[str] = Field(default=None, description="码云分支，未设置时为空")
