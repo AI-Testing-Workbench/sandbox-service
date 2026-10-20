@@ -313,6 +313,7 @@ class ContainerStatusView:
     gitee_user: str = ""
     gitee_repository: str = ""
     gitee_url: str = ""
+    gitee_branch: Optional[str] = None
     api_token: str = ""
     novnc_url: Optional[str] = None
     git_fin_status: str = "pending"
@@ -876,6 +877,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         cpu_usage=cpu_usage,
         memory_usage=memory_usage,
         gitee_url=row.gitee_url,
+        gitee_branch=row.gitee_branch,
         api_token=row.api_token,
         gitee_user=row.gitee_user,
         gitee_repository=row.gitee_repository,

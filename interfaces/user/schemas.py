@@ -2,7 +2,7 @@
 用户 REST API 请求 / 响应模型。
 
 `POST /user/containers` 请求包含可选字段 `authorize_general_account`（bool，省略时不授权），并支持可选的
-码云信息；云端沙箱过期时间和资源限制由服务端管理。用户云端沙箱详情还返回码云用户和仓库信息。
+码云信息；云端沙箱过期时间和资源限制由服务端管理。用户云端沙箱详情还返回码云用户、仓库、地址和分支信息。
 """
 
 from __future__ import annotations
@@ -67,6 +67,8 @@ class CreateContainerResponse(BaseModel):
 class ContainerStatusResponse(ContainerRuntimeResponse):
     gitee_user: str = Field(description="云端沙箱所属的码云用户名")
     gitee_repository: str = Field(description="云端沙箱所属的码云仓库")
+    gitee_url: str = Field(description="云端沙箱所属的码云仓库地址")
+    gitee_branch: str | None = Field(description="云端沙箱所属的码云仓库分支")
 
 
 class ContainerStatusListResponse(BaseModel):

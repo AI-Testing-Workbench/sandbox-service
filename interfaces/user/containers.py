@@ -44,6 +44,8 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
         memory_usage=view.memory_usage,
         gitee_user=view.gitee_user,
         gitee_repository=view.gitee_repository,
+        gitee_url=view.gitee_url,
+        gitee_branch=view.gitee_branch,
     )
 
 
