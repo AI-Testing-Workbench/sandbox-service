@@ -53,13 +53,16 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
     "",
     response_model=CreateContainerResponse,
     status_code=200,
-    responses=api_responses("成功", 200, 400, 403, 409, 502),
+    responses=api_responses("成功", 200, 400, 403, 404, 409, 502),
 )
 async def create_container(request: CreateContainerRequest) -> CreateContainerResponse:
     """创建并启动云端沙箱，固定使用管理员配置的镜像。"""
     created = await container.create_container(
         container.CreateContainerParams(
             user_id=request.user_id,
+            source_service_id=request.from_,
+            skip_git=request.skip_git,
+            explicit_fields=frozenset(request.model_fields_set),
             container_type=request.type,
             gitee_url=request.gitee_url,
             gitee_user=request.gitee_user,

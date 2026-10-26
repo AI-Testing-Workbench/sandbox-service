@@ -32,8 +32,10 @@ class PreparedVolumeDirectories:
 def prepare_volume_directories(
     client: FileBrowserClient,
     plan: VolumePathPlan,
+    *,
+    create_mount_directories: bool = True,
 ) -> PreparedVolumeDirectories:
-    """按规划递归创建目录，并只允许复用已存在的用户目录。"""
+    """按规划递归创建目录；复制模式可暂不创建挂载叶目录。"""
     user_path_created = False
     service_path_created = False
     try:
@@ -51,8 +53,11 @@ def prepare_volume_directories(
         service_path_created = True
 
         exclusive_paths = set(plan.exclusive_paths)
+        mount_leaf_paths = {mount.filebrowser_path for mount in plan.mount_paths}
         for directory_path in plan.directory_paths:
             if directory_path in (plan.user_path, plan.service_path):
+                continue
+            if not create_mount_directories and directory_path in mount_leaf_paths:
                 continue
             resource = _get_resource(client, directory_path)
             if resource is not None:

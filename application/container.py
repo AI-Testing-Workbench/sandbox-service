@@ -11,18 +11,24 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
+import logging
 import math
 import uuid
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, AsyncIterator, NoReturn, Optional, cast
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from application.blacklist import ensure_user_not_blacklisted
+from application.container_source import resolve_container_source
+from application.git_api import report_git_status
+from application.volume_copy import (
+    copy_service_volumes_best_effort,
+    restore_volume_directories_best_effort,
+)
 from application.volume_paths import (
     build_sandbox_volumes,
     build_volume_path_plan,
@@ -50,6 +56,7 @@ from domain.errors import (
 from domain.models import (
     ContainerStatus,
     ContainerType,
+    GitStatus,
     add_hours_to_iso,
     get_public_git_fin_status,
     resolve_container_status,
@@ -272,6 +279,9 @@ def _cleanup_volume_for_container_sync(user_id: str, service_id: str) -> None:
 @dataclass(frozen=True)
 class CreateContainerParams:
     user_id: str
+    source_service_id: str = ""
+    skip_git: bool = False
+    explicit_fields: frozenset[str] = frozenset()
     image: Optional[str] = None
     gitee_user: Optional[str] = None
     gitee_repository: Optional[str] = None
@@ -436,7 +446,31 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
         `TESTAGENT_ENABLE_CHROME=1`（镜像内拉起 Chrome/VNC，sshd 仍可 SSH 连入），
         两者底层为同一镜像、仅启动方式不同。
     """
-    _validate_required(params)
+    _validate_required(params, validate_gitee=not params.source_service_id)
+    if params.source_service_id:
+        source = await resolve_container_source(
+            params.source_service_id,
+            user_id=params.user_id,
+            gitee_user=params.gitee_user,
+            gitee_repository=params.gitee_repository,
+            gitee_branch=params.gitee_branch,
+            gitee_url=params.gitee_url,
+            authorize_general_account=params.authorize_general_account,
+            expiration_hours=params.expiration_hours,
+            container_type=params.container_type,
+            explicit_fields=params.explicit_fields,
+        )
+        params = replace(
+            params,
+            gitee_user=source.gitee_user,
+            gitee_repository=source.gitee_repository,
+            gitee_branch=source.gitee_branch,
+            gitee_url=source.gitee_url,
+            authorize_general_account=source.authorize_general_account,
+            expiration_hours=source.expiration_hours,
+            container_type=source.container_type,
+        )
+        _validate_required(params)
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
     gitee_user = _normalise_optional_gitee_value(params.gitee_user)
     gitee_repository = _normalise_optional_gitee_value(params.gitee_repository)
@@ -478,8 +512,33 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                     prepare_volume_directories,
                     volume_client,
                     volume_plan,
+                    create_mount_directories=not bool(params.source_service_id),
                 )
                 volumes = build_sandbox_volumes(volume_plan, settings.pvc_name or "")
+                if params.source_service_id:
+                    try:
+                        source_plan = build_volume_path_plan(
+                            params.user_id,
+                            params.source_service_id,
+                        )
+                        await asyncio.to_thread(
+                            copy_service_volumes_best_effort,
+                            volume_client,
+                            source_plan,
+                            volume_plan,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning(
+                            "FileBrowser 来源卷路径处理失败，继续创建: source=%s, target=%s, error=%s",
+                            params.source_service_id,
+                            service_id,
+                            type(exc).__name__,
+                        )
+                        await asyncio.to_thread(
+                            restore_volume_directories_best_effort,
+                            volume_client,
+                            volume_plan,
+                        )
             except Exception as exc:  # noqa: BLE001
                 await asyncio.to_thread(
                     rollback_volume_directories,
@@ -614,6 +673,31 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                 logger.exception("容器未能启动且数据库记录清理失败: %s", container_id)
             _raise_backend_service_error("等待容器运行", exc)
 
+        if params.skip_git:
+            try:
+                await report_git_status(
+                    service_id,
+                    params.user_id,
+                    GitStatus.INITIALIZED,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.error("提交 Git 初始化最终状态失败: %s", type(exc).__name__)
+                await _cleanup_created_container(
+                    container_id,
+                    service_id,
+                    prepared_volume_directories,
+                    volume_client,
+                )
+                try:
+                    async with session_scope() as session:
+                        await ContainerRepository(session).delete(container_id)
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "Git 最终状态提交失败且数据库记录清理失败: %s",
+                        container_id,
+                    )
+                raise ExternalDependencyError("提交 Git 初始化最终状态失败") from exc
+
         return CreatedContainer(
             container_id=container_id,
             image=image,
@@ -726,7 +810,11 @@ async def _resolve_image(params: CreateContainerParams) -> str:
     return image
 
 
-def _validate_required(params: CreateContainerParams) -> None:
+def _validate_required(
+    params: CreateContainerParams,
+    *,
+    validate_gitee: bool = True,
+) -> None:
     if not params.user_id or not params.user_id.strip():
         raise InvalidArgumentError("user_id 不能为空")
     ensure_user_not_blacklisted(params.user_id)
@@ -735,7 +823,7 @@ def _validate_required(params: CreateContainerParams) -> None:
         _normalise_optional_gitee_value(params.gitee_user),
         _normalise_optional_gitee_value(params.gitee_repository),
     )
-    if any(gitee_values) and not all(gitee_values):
+    if validate_gitee and any(gitee_values) and not all(gitee_values):
         raise InvalidArgumentError(
             "gitee_url、gitee_user、gitee_repository 必须同时填写或同时为空"
         )

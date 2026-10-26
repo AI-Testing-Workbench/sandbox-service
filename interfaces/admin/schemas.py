@@ -123,6 +123,8 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
                 {
                     "user_id": "10001",
                     "image": "localhost:5000/testagent/app:v1",
+                    "from": "",
+                    "skip_git": False,
                     "gitee_user": "test_name",
                     "gitee_repository": "test_project",
                     "gitee_branch": "develop",

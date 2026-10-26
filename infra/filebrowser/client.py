@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Sequence
 from urllib.parse import quote, urlsplit
 
 import requests
@@ -29,6 +29,7 @@ __all__ = [
     "FileBrowserServerError",
     "FileBrowserTransportError",
     "FileBrowserResponseError",
+    "FileBrowserPartialCopyError",
     "FileBrowserClient",
 ]
 
@@ -68,6 +69,10 @@ class FileBrowserTransportError(FileBrowserError):
 
 class FileBrowserResponseError(FileBrowserError):
     """FileBrowser 返回未单独分类的 HTTP 或协议错误。"""
+
+
+class FileBrowserPartialCopyError(FileBrowserResponseError):
+    """FileBrowser 目录复制未完整成功。"""
 
 
 class FileBrowserClient:
@@ -192,24 +197,59 @@ class FileBrowserClient:
         """删除目录的语义别名。"""
         return self.delete_resource(path)
 
+    def copy_resources(self, resources: Sequence[tuple[str, str]]) -> None:
+        """递归复制资源路径对；部分成功响应视为整体失败。"""
+        if not resources:
+            raise ValueError("FileBrowser 复制列表不能为空")
+        items = [
+            {
+                "fromSource": self.SOURCE,
+                "fromPath": _validate_path(source_path),
+                "toSource": self.SOURCE,
+                "toPath": _validate_path(target_path),
+            }
+            for source_path, target_path in resources
+        ]
+        response = self._request(
+            "PATCH",
+            _RESOURCES_ENDPOINT,
+            path=None,
+            json_body={"action": "copy", "overwrite": False, "rename": False, "items": items},
+            retryable=False,
+        )
+        payload = self._json_object(response, "复制资源")
+        succeeded = payload.get("succeeded")
+        failed = payload.get("failed")
+        if (
+            response is None
+            or response.status_code != 200
+            or not isinstance(succeeded, list)
+            or len(succeeded) != len(items)
+            or not isinstance(failed, list)
+            or failed
+        ):
+            logger.warning("FileBrowser 目录复制部分失败或响应不完整")
+            raise FileBrowserPartialCopyError("FileBrowser 目录复制未完整成功")
+
     def _request(
         self,
         method: str,
         endpoint: str,
         *,
-        path: str,
+        path: Optional[str],
         is_directory: Optional[bool] = None,
         data: Optional[bytes] = None,
+        json_body: Optional[Mapping[str, Any]] = None,
         retryable: bool,
         allow_not_found: bool = False,
     ) -> Optional[requests.Response]:
-        path = _validate_path(path)
+        if path is not None:
+            path = _validate_path(path)
         url = f"{self._api_url}/{endpoint.lstrip('/')}"
-        params: dict[str, str] = {
-            "source": self.SOURCE,
-            "path": path,
-        }
-        if is_directory is not None:
+        params: dict[str, str] = {}
+        if path is not None:
+            params = {"source": self.SOURCE, "path": path}
+        if is_directory is not None and path is not None:
             params["isDir"] = "true" if is_directory else "false"
         attempts = self._max_retries + 1 if retryable else 1
         transient_attempt = 0
@@ -223,6 +263,7 @@ class FileBrowserClient:
                     headers=request_headers,
                     params=params,
                     data=data,
+                    json=json_body,
                     timeout=self._timeout,
                 )
             except requests.RequestException as exc:

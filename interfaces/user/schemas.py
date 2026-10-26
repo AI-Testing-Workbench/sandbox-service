@@ -38,6 +38,8 @@ class CreateContainerRequest(ContainerCreateRequestBase):
             "examples": [
                 {
                     "user_id": "10001",
+                    "from": "",
+                    "skip_git": False,
                     "gitee_user": "test_name",
                     "gitee_repository": "test_project",
                     "gitee_branch": "develop",

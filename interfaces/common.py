@@ -32,6 +32,15 @@ class ContainerCreateRequestBase(BaseModel):
     """云端沙箱创建参数"""
 
     user_id: str = Field(description="用户 ID")
+    from_: str = Field(
+        default="",
+        alias="from",
+        description="待继承的沙箱的服务 ID",
+    )
+    skip_git: bool = Field(
+        default=False,
+        description="是否跳过 git 验证",
+    )
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
         description="云端沙箱类型：testagent_cloud TestAgentCloud / autotest_cloud 自动化跑批（启用 Chrome/VNC）",

@@ -47,7 +47,7 @@ router = APIRouter(
     "",
     response_model=AdminCreateContainerResponse,
     status_code=200,
-    responses=api_responses("成功", 200, 400, 409, 502),
+    responses=api_responses("成功", 200, 400, 404, 409, 502),
 )
 async def create_container(request: AdminCreateContainerRequest) -> AdminCreateContainerResponse:
     """创建并启动云端沙箱，包含供管理员使用的完整字段。"""
@@ -59,6 +59,9 @@ async def create_container(request: AdminCreateContainerRequest) -> AdminCreateC
     created = await container_service.create_container(
         container_service.CreateContainerParams(
             user_id=request.user_id,
+            source_service_id=request.from_,
+            skip_git=request.skip_git,
+            explicit_fields=frozenset(request.model_fields_set),
             image=full_name,
             container_type=request.type,
             gitee_url=request.gitee_url,
