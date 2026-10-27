@@ -136,6 +136,7 @@ _lifecycle_lock = asyncio.Lock()
 _SOURCE_METADATA_KEY = "testagent-cloud"
 _SOURCE_METADATA_VALUE = "true"
 _CONTAINER_TYPE_METADATA_KEY = "container-type"
+_TESTAGENT_CLOUD_TYPE_METADATA_KEY = "testagent-cloud-type"
 _CONTAINER_START_WAIT_TIMEOUT_SECONDS = 120.0
 _CONTAINER_START_POLL_INTERVAL_SECONDS = 0.25
 #: 镜像内 noVNC/websockify 监听端口（tscode-server 镜像内固定 6080）
@@ -442,7 +443,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
       及 `TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT`（true/false），并注入
       `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY` 代理源；CPU / 内存可选覆盖默认资源限制。
       OpenSandbox metadata 额外注入 `testagent-cloud=true`（来源识别）与
-      `container-type=<type>`（类型识别）。
+      `container-type=<type>`、`testagent-cloud-type=<type>`（类型识别）。
     - 类型：`testagent_cloud`（默认）只起 SSH；`autotest_cloud` 额外注入
         `TESTAGENT_ENABLE_CHROME=1`（镜像内拉起 Chrome/VNC，sshd 仍可 SSH 连入），
         两者底层为同一镜像、仅启动方式不同。
@@ -725,6 +726,7 @@ def _sandbox_create_kwargs(
             "name": name,
             _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
             _CONTAINER_TYPE_METADATA_KEY: container_type,
+            _TESTAGENT_CLOUD_TYPE_METADATA_KEY: container_type,
         },
         "resource_limits": resource_limits,
     }
