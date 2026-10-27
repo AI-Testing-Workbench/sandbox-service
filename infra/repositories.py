@@ -140,10 +140,11 @@ class ContainerRepository:
         return int(result.scalar_one())
 
     async def business_delete(self, container_id: str, deleted_at: str) -> None:
-        """业务删除：写 `deleted_at`，记录保留。"""
+        """业务删除：持久化业务删除及远端删除意图，记录保留。"""
         container = await self.get(container_id)
         if container is not None:
             container.deleted_at = deleted_at
+            container.stop_at = deleted_at
 
     async def business_restore(
         self,
@@ -155,8 +156,56 @@ class ContainerRepository:
         container = await self.get(container_id)
         if container is not None:
             container.deleted_at = None
+            container.stop_at = None
             container.created_at = created_at
             container.expiration_hours = expiration_hours
+
+    async def set_stop_intent(self, container_id: str, stop_at: str) -> bool:
+        """Persist an intentional Stop before deleting the remote sandbox."""
+        result = await self._session.execute(
+            update(Container)
+            .where(Container.container_id == container_id, Container.deleted_at.is_(None))
+            .values(stop_at=stop_at)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
+    async def clear_stop_intent(self, container_id: str) -> bool:
+        """Clear a Stop/rebuild intent after the backend is running or deleted."""
+        result = await self._session.execute(
+            update(Container)
+            .where(Container.container_id == container_id, Container.stop_at.is_not(None))
+            .values(stop_at=None)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
+    async def replace_container_id(
+        self,
+        service_id: str,
+        expected_container_id: str,
+        new_container_id: str,
+        *,
+        restore: Optional[tuple[str, int]] = None,
+    ) -> bool:
+        """Atomically replace a backend ID while preserving its service record."""
+        values: dict[str, object] = {
+            "container_id": new_container_id,
+            "stop_at": None,
+        }
+        if restore is not None:
+            values.update(
+                deleted_at=None,
+                created_at=restore[0],
+                expiration_hours=restore[1],
+            )
+        result = await self._session.execute(
+            update(Container)
+            .where(
+                Container.service_id == service_id,
+                Container.container_id == expected_container_id,
+            )
+            .values(**values)
+        )
+        return getattr(result, "rowcount", 0) == 1
 
     async def update_expiration(self, container_id: str, expiration_hours: int) -> None:
         """设置业务有效时长：仅改 `expiration_hours`，不重置 `created_at`。"""

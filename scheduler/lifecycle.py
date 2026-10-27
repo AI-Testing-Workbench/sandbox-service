@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional, cast
 from zoneinfo import ZoneInfo
@@ -39,10 +39,14 @@ __all__ = [
     "purge_containers",
     "refresh_status_cache",
     "compensate",
+    "run_cycle",
     "run_loop",
     "CachedRuntimeStatus",
     "mark_container_stop_requested",
+    "mark_container_stopped",
     "mark_container_start_requested",
+    "discard_container_status",
+    "cleanup_orphan_containers",
     "get_cached_status",
     "get_cached_runtime",
     "all_cached_statuses",
@@ -115,20 +119,20 @@ async def expire_containers() -> list[str]:
                     logger.exception("业务删除时间字段非法，跳过容器: %s", container_id)
                     continue
                 service_id = current.service_id
-            # noinspection broad-exception
-            try:
-                await _container.business_delete(service_id)
-                expired.append(container_id)
-            except OpenSandboxError as exc:
-                # OpenSandbox 适配层已记录底层原因；这里不再重复打印 traceback。
-                logger.error("业务删除处理失败: %s: %s", container_id, exc)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "业务删除处理失败: %s: %s: %s",
-                    container_id,
-                    type(exc).__name__,
-                    exc,
-                )
+        # business_delete acquires the same lifecycle lock itself.
+        try:
+            await _container.business_delete(service_id)
+            expired.append(container_id)
+        except OpenSandboxError as exc:
+            # OpenSandbox 适配层已记录底层原因；这里不再重复打印 traceback。
+            logger.error("业务删除处理失败: %s: %s", container_id, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "业务删除处理失败: %s: %s: %s",
+                container_id,
+                type(exc).__name__,
+                exc,
+            )
     if expired:
         logger.info("业务删除检查: 业务删除 %d 个", len(expired))
     return expired
@@ -138,13 +142,12 @@ async def expire_containers() -> list[str]:
 # T7.3 保留期检查（独立；物理删除前二次核对 deleted_at 防与管理 API 恢复竞争）
 # ---------------------------------------------------------------------------
 async def purge_containers() -> list[str]:
-    """`deleted_at + TA_SS_CONTAINER_RETENTION_HOURS` 到期即物理删除
-    （OpenSandbox Delete + 删除 SQLite 记录）；未到期时也检查远端是否已被外部删除。
+    """业务删除期间重试远端 Delete，保留期到期后清理卷和数据库记录。
 
-    - `retention_hours <= 0` 时保留仍存在的远端容器，但仍清理已不存在的远端记录。
+    - `retention_hours <= 0` 时远端仍删除，但数据库记录和卷不自动清理。
     - 物理删除前在事务内二次核对 `deleted_at`（若已被管理 API 恢复/清除则跳过），
       并在同一事务内执行外部删除与记录删除，借助 SQLite 写锁与管理 API 恢复互斥，避免竞争。
-    - 状态查询失败时保留本地记录；只有明确的 `SandboxNotFoundError` 才触发缺失清理。
+    - 保留期内后端缺失不得提前清理本地记录或卷。
     - 返回本次物理删除的容器 ID 列表。
     """
     retention_hours = settings.container_retention_hours
@@ -176,50 +179,63 @@ async def purge_containers() -> list[str]:
                         )
                         purge_due = deadline <= _now()
                     except (TypeError, ValueError):
-                        logger.exception(
-                            "物理保留时间字段非法，仅检查远端是否已不存在: %s",
-                            container_id,
-                        )
+                        logger.exception("物理保留时间字段非法，保留本地记录: %s", container_id)
 
                 client = _container.get_opensandbox_client()
-                if purge_due:
-                    # noinspection broad-exception
-                    try:
-                        await client.delete(container_id)
-                    except SandboxNotFoundError:
-                        # 远端已不存在，仍可安全清理对应卷目录和本地记录。
-                        pass
-                    except OpenSandboxError as exc:
-                        # OpenSandbox 适配层已记录底层原因；这里仅保留调度上下文。
-                        logger.error("物理删除失败 (被外部服务删除) %s: %s", container_id, exc)
-                        continue
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error(
-                            "物理删除失败 (被外部服务删除) %s: %s: %s",
-                            container_id,
-                            type(exc).__name__,
-                            exc,
-                        )
-                        continue
-                else:
-                    # 保留期内只核实存在性，不主动删除仍存在的业务删除容器。
-                    try:
-                        await client.get_status(container_id)
-                    except SandboxNotFoundError:
-                        pass
-                    except OpenSandboxError as exc:
-                        logger.error("检查业务删除容器是否存在失败 %s: %s", container_id, exc)
-                        continue
-                    except Exception as exc:  # noqa: BLE001
-                        logger.error(
-                            "检查业务删除容器是否存在失败 %s: %s: %s",
-                            container_id,
-                            type(exc).__name__,
-                            exc,
-                        )
-                        continue
+                if not purge_due:
+                    if current.stop_at is not None:
+                        # A prior business-delete request may have been interrupted
+                        # after persisting intent but before the remote Delete.
+                        try:
+                            await client.delete(container_id)
+                        except SandboxNotFoundError:
+                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            logger.error(
+                                "重试删除业务删除后端失败 %s: %s: %s",
+                                container_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                            continue
+                        await repo.clear_stop_intent(container_id)
                     else:
-                        continue
+                        # Keep legacy presence scanning, but remote absence no longer
+                        # shortens the configured volume/data retention window.
+                        try:
+                            await client.get_status(container_id)
+                        except SandboxNotFoundError:
+                            pass
+                        except OpenSandboxError as exc:
+                            logger.error("检查业务删除容器是否存在失败 %s: %s", container_id, exc)
+                            continue
+                        except Exception as exc:  # noqa: BLE001
+                            logger.error(
+                                "检查业务删除容器是否存在失败 %s: %s: %s",
+                                container_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                            continue
+                    continue
+
+                # At retention expiry, remote absence is idempotent success and
+                # the service's volume/record may finally be removed.
+                try:
+                    await client.delete(container_id)
+                except SandboxNotFoundError:
+                    pass
+                except OpenSandboxError as exc:
+                    logger.error("物理删除失败 %s: %s", container_id, exc)
+                    continue
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "物理删除失败 %s: %s: %s",
+                        container_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    continue
                 await _container.cleanup_volume_for_container(current.user_id, current.service_id)
                 await repo.delete(container_id)
                 _discard_cached_status(container_id)
@@ -258,61 +274,91 @@ async def refresh_status_cache() -> None:
             if current is None or current.deleted_at is not None:
                 continue
             current_git_fin_status = getattr(current, "git_fin_status", None)
+            runtime: Optional[CachedRuntimeStatus]
 
-            try:
-                runtime, missing, failed = await _fetch_runtime_status(row.container_id)
-            except Exception as exc:  # noqa: BLE001
-                # 单个容器异常不得中断本轮刷新；保留 unknown 快照并统计失败数。
-                logger.error(
-                    "单容器状态刷新失败: %s: %s: %s",
-                    row.container_id,
-                    type(exc).__name__,
-                    exc,
-                )
-                runtime, missing, failed = (
-                    CachedRuntimeStatus(
-                        status=ContainerStatus.UNKNOWN,
-                        endpoint=None,
-                        started_at=None,
-                        cpu_usage=None,
-                        memory_usage=None,
-                    ),
-                    False,
-                    True,
-                )
+            if current.stop_at is not None:
+                try:
+                    await _container.get_opensandbox_client().delete(row.container_id)
+                    runtime, missing, failed = (
+                        CachedRuntimeStatus(status=ContainerStatus.STOPPED),
+                        False,
+                        False,
+                    )
+                except SandboxNotFoundError:
+                    runtime, missing, failed = (
+                        CachedRuntimeStatus(status=ContainerStatus.STOPPED),
+                        False,
+                        False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.error(
+                        "重试停止容器失败: %s: %s: %s",
+                        row.container_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    runtime, missing, failed = (
+                        CachedRuntimeStatus(status=ContainerStatus.UNKNOWN),
+                        False,
+                        True,
+                    )
+            else:
+                try:
+                    runtime, missing, failed = await _fetch_runtime_status(row.container_id)
+                except Exception as exc:  # noqa: BLE001
+                    # 单个容器异常不得中断本轮刷新；保留 unknown 快照并统计失败数。
+                    logger.error(
+                        "单容器状态刷新失败: %s: %s: %s",
+                        row.container_id,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    runtime, missing, failed = (
+                        CachedRuntimeStatus(
+                            status=ContainerStatus.UNKNOWN,
+                            endpoint=None,
+                            started_at=None,
+                            cpu_usage=None,
+                            memory_usage=None,
+                        ),
+                        False,
+                        True,
+                    )
         if missing:
             # noinspection broad-exception
             try:
                 await _container.delete_missing_container_record(row.container_id)
             except Exception:  # noqa: BLE001
                 logger.exception("远端容器不存在，删除数据库记录失败: %s", row.container_id)
-            # 远端缺失不是 stopped；无论本地删除是否成功，都不能把过期的 stopped
-            # 状态继续提供给管理 API。删除失败时下一轮会重新扫描并重试。
+            # Unexpected remote disappearance still removes active records; a
+            # persisted Stop intent was handled above and remains recoverable.
             _discard_cached_status(row.container_id)
             continue
+        if runtime is None:
+            continue
         active_ids.add(row.container_id)
-        if runtime is not None:
-            resolved_status = resolve_container_status(
-                current_git_fin_status,
-                runtime.status,
-            )
-            runtime = replace(
-                runtime,
-                status=resolved_status,
-                git_fin_status=get_public_git_fin_status(current_git_fin_status),
-                cpu_usage=runtime.cpu_usage if resolved_status is ContainerStatus.RUNNING else None,
-                memory_usage=(
-                    runtime.memory_usage
-                    if resolved_status is ContainerStatus.RUNNING
-                    else None
-                ),
-            )
-            updates[row.container_id] = runtime
-            update_versions[row.container_id] = cache_version
-            failed_count += int(failed)
+        resolved_status = resolve_container_status(
+            current_git_fin_status,
+            runtime.status,
+        )
+        updated_runtime: CachedRuntimeStatus = CachedRuntimeStatus(
+            status=resolved_status,
+            endpoint=runtime.endpoint,
+            started_at=runtime.started_at,
+            git_fin_status=get_public_git_fin_status(current_git_fin_status),
+            cpu_usage=runtime.cpu_usage if resolved_status is ContainerStatus.RUNNING else None,
+            memory_usage=(
+                runtime.memory_usage
+                if resolved_status is ContainerStatus.RUNNING
+                else None
+            ),
+        )
+        updates[row.container_id] = updated_runtime
+        update_versions[row.container_id] = cache_version
+        failed_count += int(failed)
     with _status_cache_lock:
         published_updates: dict[str, CachedRuntimeStatus] = {}
-        for container_id, runtime in updates.items():
+        for container_id, cached_runtime in updates.items():
             # A lifecycle action may have completed while this refresh was
             # reading the remote state. Never publish that stale result over
             # the pending transition created by the action.
@@ -321,15 +367,15 @@ async def refresh_status_cache() -> None:
             transition = _transition_targets.get(container_id)
             if transition is not None and transition[0] == update_versions[container_id]:
                 target = transition[1]
-                if target is ContainerStatus.STOPPED and runtime.status is ContainerStatus.RUNNING:
+                if target is ContainerStatus.STOPPED and cached_runtime.status is ContainerStatus.RUNNING:
                     continue
-                if target is ContainerStatus.RUNNING and runtime.status is ContainerStatus.STOPPED:
+                if target is ContainerStatus.RUNNING and cached_runtime.status is ContainerStatus.STOPPED:
                     continue
-                if runtime.status is target or runtime.status is ContainerStatus.FAILED:
+                if cached_runtime.status is target or cached_runtime.status is ContainerStatus.FAILED:
                     _transition_targets.pop(container_id, None)
-            _status_cache[container_id] = runtime.status
-            _runtime_cache[container_id] = runtime
-            published_updates[container_id] = runtime
+            _status_cache[container_id] = cached_runtime.status
+            _runtime_cache[container_id] = cached_runtime
+            published_updates[container_id] = cached_runtime
         stale = [
             cid
             for cid in set(_status_cache) | set(_runtime_cache)
@@ -484,9 +530,24 @@ def _discard_cached_status(container_id: str) -> None:
         _runtime_cache.pop(container_id, None)
 
 
+def discard_container_status(container_id: str) -> None:
+    """Remove cached runtime data after backend ID replacement or deletion."""
+    _discard_cached_status(container_id)
+
+
 def mark_container_stop_requested(container_id: str) -> None:
-    """Publish a safe transition state after a successful remote Stop request."""
+    """Publish a transition while a durable Stop/Delete request is in progress."""
     _mark_container_transition_requested(container_id, ContainerStatus.STOPPED)
+
+
+def mark_container_stopped(container_id: str) -> None:
+    """Publish confirmed absence after a successful physical Stop."""
+    with _status_cache_lock:
+        _cache_versions[container_id] = _cache_versions.get(container_id, 0) + 1
+        _transition_targets.pop(container_id, None)
+        stopped = CachedRuntimeStatus(status=ContainerStatus.STOPPED)
+        _status_cache[container_id] = ContainerStatus.STOPPED
+        _runtime_cache[container_id] = stopped
 
 
 def mark_container_start_requested(container_id: str) -> None:
@@ -511,22 +572,47 @@ def _mark_container_transition_requested(
 # T7.5 补偿
 # ---------------------------------------------------------------------------
 async def compensate() -> list[str]:
-    """进程重启后的首次补齐：扫描全部持久化记录，补齐到期的业务删除与保留期物理删除。
+    """进程启动后补齐生命周期并删除没有数据库记录的孤儿容器。
 
     幂等：扫描范围排除已完成动作，不重复触发业务删除/物理删除。
     """
-    done = await expire_containers()
-    done += await purge_containers()
+    done = await run_cycle()
     if done:
         logger.info("补偿完成：处理 %d 项", len(done))
     return done
+
+
+async def run_cycle() -> list[str]:
+    """Run one periodic lifecycle/status/orphan reconciliation cycle."""
+    done: list[str] = []
+    steps: tuple[Callable[[], Awaitable[object]], ...] = (
+        expire_containers,
+        purge_containers,
+        refresh_status_cache,
+        cleanup_orphan_containers,
+    )
+    for step in steps:
+        # noinspection broad-exception
+        try:
+            result = await step()
+        except Exception:  # noqa: BLE001
+            logger.exception("Scheduler 步骤失败: %s", step.__name__)
+            continue
+        if isinstance(result, list):
+            done.extend(item for item in result if isinstance(item, str))
+    return done
+
+
+async def cleanup_orphan_containers() -> list[str]:
+    """Run the create-lock-protected remote orphan reconciliation."""
+    return await _container.cleanup_orphan_containers()
 
 
 # ---------------------------------------------------------------------------
 # T7.1 定时循环
 # ---------------------------------------------------------------------------
 async def run_loop() -> None:
-    """单实例后台循环：先补偿一次，再按周期执行过期 / 保留期 / 状态刷新检查。
+    """单实例后台循环：启动补偿并周期执行生命周期、状态和孤儿清理。
 
     周期：`TA_SS_SCHEDULER_POLL_INTERVAL_SECONDS`（v4 §13.1）。
     """
@@ -536,16 +622,6 @@ async def run_loop() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("启动后初次调度失败")
     interval = settings.scheduler_poll_interval_seconds
-    steps: tuple[Callable[[], Awaitable[object]], ...] = (
-        expire_containers,
-        purge_containers,
-        refresh_status_cache,
-    )
     while True:
         await asyncio.sleep(interval)
-        for step in steps:
-            # noinspection broad-exception
-            try:
-                await step()
-            except Exception:  # noqa: BLE001
-                logger.exception("调度检查异常: %s", step.__name__)
+        await run_cycle()

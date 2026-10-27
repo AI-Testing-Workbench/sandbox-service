@@ -364,11 +364,11 @@ class OpenSandboxClient:
             await _close_sdk_service(sandbox_service)
 
     async def start(self, container_id: str) -> None:
-        """启动容器（v4 §11.3 Start 幂等；容器不存在视为已满足）。"""
+        """启动容器；缺失容器向应用层报告，供按需重建。"""
         try:
             current = await self.get_status(container_id)
         except SandboxNotFoundError:
-            return
+            raise
         except OpenSandboxError:
             # 状态查询失败通常表示 OpenSandbox 不可达；不要继续 resume，
             # 否则一次请求会触发多次连接异常并产生重复日志。
@@ -385,8 +385,19 @@ class OpenSandboxClient:
             )
             await sandbox.close()
         except Exception as exc:  # noqa: BLE001
-            if _is_not_found(exc) or await _is_in_state(
-                self, container_id, frozenset({"RUNNING"})
+            if _is_not_found(exc):
+                raise SandboxNotFoundError("启动容器时远端容器不存在") from exc
+            current_after_resume: Optional[SandboxStatus] = None
+            # noinspection broad-exception
+            try:
+                current_after_resume = await self.get_status(container_id)
+            except SandboxNotFoundError as status_exc:
+                raise status_exc from exc
+            except Exception:  # noqa: BLE001
+                pass
+            if (
+                current_after_resume is not None
+                and current_after_resume.state.strip().upper() == "RUNNING"
             ):
                 return
             logger.error(
@@ -419,11 +430,11 @@ class OpenSandboxClient:
             raise OpenSandboxError("停止容器失败") from exc
 
     async def restart(self, container_id: str) -> None:
-        """重启容器：停止并重新启动，Container ID 不变（v4 §11.3 Restart 幂等）。"""
+        """重启现存容器；缺失后端向应用层报告以触发原服务重建。"""
         try:
             current = await self.get_status(container_id)
         except SandboxNotFoundError:
-            return
+            raise
         if current.state.strip().upper() == "FAILED":
             raise SandboxFailedError("Failed 状态的容器不能 Restart")
         await self.stop(container_id)

@@ -70,6 +70,7 @@ class GitInitializationSession:
     )
     credential_claimed: bool = False
     ended: bool = False
+    suspended: bool = False
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
     def clear_temporary_credential(self, *, claimed: bool = False) -> None:
@@ -139,7 +140,7 @@ class GitSessionStore:
             session = self._by_service_id.get(service_id)
             if session is None:
                 self._raise_missing_active_session(service_id)
-            if session.ended:
+            if session.ended or session.suspended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
             session.git_status = GitStatus.WAITING
             session.container_running.set()
@@ -166,6 +167,52 @@ class GitSessionStore:
             self._by_container_id[container_id] = session
             return session
 
+    def replace_container_id(
+        self,
+        service_id: str,
+        previous_container_id: str,
+        new_container_id: str,
+    ) -> bool:
+        """Move an active Git session to a rebuilt backend without resetting it."""
+        service_id = _require_id(service_id, "service_id")
+        previous_container_id = _require_id(previous_container_id, "container_id")
+        new_container_id = _require_id(new_container_id, "container_id")
+        with self._lock:
+            session = self._by_service_id.get(service_id)
+            if session is None or session.ended:
+                return False
+            if session.container_id == new_container_id:
+                return True
+            if session.container_id != previous_container_id:
+                raise BusinessConflictError("Git 会话未绑定预期的 container_id")
+            existing = self._by_container_id.get(new_container_id)
+            if existing is not None and existing is not session:
+                raise BusinessConflictError("Git container_id 已被其他会话占用")
+            self._by_container_id.pop(previous_container_id, None)
+            session.container_id = new_container_id
+            self._by_container_id[new_container_id] = session
+            return True
+
+    def suspend_session(self, service_id: str) -> None:
+        """Drop temporary credentials while preserving an in-progress state for Restore."""
+        service_id = _require_id(service_id, "service_id")
+        with self._lock:
+            session = self._by_service_id.get(service_id)
+            if session is None or session.ended:
+                return
+            session.clear_temporary_credential()
+            session.suspended = True
+
+    def resume_suspended_session(self, service_id: str) -> bool:
+        """Re-enable the same session after the business record has been restored."""
+        service_id = _require_id(service_id, "service_id")
+        with self._lock:
+            session = self._by_service_id.get(service_id)
+            if session is None or session.ended or not session.suspended:
+                return False
+            session.suspended = False
+            return True
+
     async def resolve_service_resource(
         self,
         service_id: str,
@@ -175,33 +222,61 @@ class GitSessionStore:
         service_id = _require_id(service_id, "service_id")
         operator_user_id = _require_operator_user_id(operator_user_id)
 
+        suspended_session: Optional[GitInitializationSession] = None
         with self._lock:
             session = self._by_service_id.get(service_id)
             if session is not None:
                 _ensure_user_match(session.service_user, operator_user_id)
-                return GitResource(
-                    user_id=session.service_user,
-                    service_id=session.service_id,
-                    container_id=session.container_id,
-                    git_fin_status=(
-                        GitFinalStatus.INITIALIZED.value
-                        if session.service_id is None
-                        else None
-                    ),
-                    session=session,
-                )
-            ended = self._ended_service_sessions.get(service_id)
-            if ended is not None:
-                ended_user, ended_status = ended
-                _ensure_user_match(ended_user, operator_user_id)
-                if ended_status is None:
-                    raise GitSessionEndedError("Git 初始化会话已结束")
+                if session.suspended:
+                    suspended_session = session
+                else:
+                    return GitResource(
+                        user_id=session.service_user,
+                        service_id=session.service_id,
+                        container_id=session.container_id,
+                        git_fin_status=(
+                            GitFinalStatus.INITIALIZED.value
+                            if session.service_id is None
+                            else None
+                        ),
+                        session=session,
+                    )
+            else:
+                ended = self._ended_service_sessions.get(service_id)
+                if ended is not None:
+                    ended_user, ended_status = ended
+                    _ensure_user_match(ended_user, operator_user_id)
+                    if ended_status is None:
+                        raise GitSessionEndedError("Git 初始化会话已结束")
         # 初始化会话清理或服务重启后，从持久化容器记录恢复最终 service_id。
         async with session_scope() as db_session:
             row = await ContainerRepository(db_session).get_by_service_id(service_id)
         if row is None or row.deleted_at is not None:
             raise GitResourceNotFoundError("Git service_id 不存在")
         _ensure_user_match(row.user_id, operator_user_id)
+        if suspended_session is not None:
+            with self._lock:
+                if (
+                    self._by_service_id.get(service_id) is suspended_session
+                    and suspended_session.suspended
+                    and not suspended_session.ended
+                ):
+                    existing = self._by_container_id.get(row.container_id)
+                    if existing is not None and existing is not suspended_session:
+                        raise BusinessConflictError("Git container_id 已被其他会话占用")
+                    if suspended_session.container_id != row.container_id:
+                        if suspended_session.container_id is not None:
+                            self._by_container_id.pop(suspended_session.container_id, None)
+                        suspended_session.container_id = row.container_id
+                        self._by_container_id[row.container_id] = suspended_session
+                    suspended_session.suspended = False
+                    return GitResource(
+                        user_id=row.user_id,
+                        service_id=service_id,
+                        container_id=row.container_id,
+                        git_fin_status=row.git_fin_status,
+                        session=suspended_session,
+                    )
         if row.git_fin_status is None:
             raise GitSessionEndedError("Git 初始化会话无法恢复")
         return GitResource(
@@ -228,7 +303,7 @@ class GitSessionStore:
         if resource.session is None:
             raise GitSessionEndedError("Git 初始化会话已结束")
         with self._lock:
-            if resource.session.ended:
+            if resource.session.ended or resource.session.suspended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
             if status is GitStatus.CREDENTIAL_REJECTED:
                 resource.session.clear_temporary_credential()
@@ -257,6 +332,8 @@ class GitSessionStore:
             session = self._by_service_id.get(service_id)
             if session is not None:
                 _ensure_user_match(session.service_user, operator_user_id)
+                if session.suspended:
+                    raise GitSessionEndedError("Git 会话随业务删除暂停")
                 if session.ended:
                     session_to_reset = session
                 else:
@@ -331,7 +408,11 @@ class GitSessionStore:
         """Wait for runtime readiness before resuming or resetting a session."""
         await session.container_running.wait()
         with self._lock:
-            if session.ended or self._by_service_id.get(service_id) is not session:
+            if (
+                session.ended
+                or session.suspended
+                or self._by_service_id.get(service_id) is not session
+            ):
                 self._raise_missing_active_session(service_id)
             if session.git_status in (GitStatus.WAITING, GitStatus.STARTING):
                 session.git_status = GitStatus.STARTING
@@ -350,6 +431,7 @@ class GitSessionStore:
         with self._lock:
             if (
                 session.service_id is None
+                or session.suspended
                 or self._by_service_id.get(session.service_id) is not session
             ):
                 raise GitSessionEndedError("Git 初始化会话已结束")
@@ -388,7 +470,7 @@ class GitSessionStore:
             raise GitSessionEndedError("Git 初始化会话已结束")
         validate_credential(session.service_user, credential)
         with self._lock:
-            if session.ended:
+            if session.ended or session.suspended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
             session.clear_temporary_credential()
             session.temporary_git_username = credential.git_username
@@ -417,7 +499,7 @@ class GitSessionStore:
             raise GitSessionEndedError("Git 初始化会话已结束")
         validate_credential(session.service_user, credential)
         with self._lock:
-            if session.ended:
+            if session.ended or session.suspended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
             session.clear_temporary_credential()
             session.staged_persistent_credential = credential
@@ -441,7 +523,7 @@ class GitSessionStore:
         if session is None:
             return None
         with self._lock:
-            if session.ended:
+            if session.ended or session.suspended:
                 return None
             return session.staged_persistent_credential
 
@@ -456,7 +538,7 @@ class GitSessionStore:
         if session is None:
             raise GitCredentialUnavailableError("当前资源没有临时凭证")
         with self._lock:
-            if session.ended:
+            if session.ended or session.suspended:
                 raise GitSessionEndedError("Git 初始化会话已结束")
             if not session.credential_available:
                 if session.credential_claimed:
@@ -507,6 +589,8 @@ class GitSessionStore:
             session = self._by_service_id.get(service_id)
             if session is None:
                 self._raise_missing_active_session(service_id)
+            if session.suspended:
+                raise GitSessionEndedError("Git 会话随业务删除暂停")
             if final_git_status is not None:
                 session.git_status = final_git_status
             session.clear_temporary_credential()

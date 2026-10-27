@@ -466,6 +466,5 @@ http:
 
     /XXXXXX    # 用户ID
     /XXXXXX/YYYY-YYYY...    # 服务ID，无法直接使用
-    /XXXXXX/YYYY-YYYY.../ZZZ-ZZZ...    # 容器ID，空文件，用于搜索等功能
     /XXXXXX/YYYY-YYYY.../...    # 其他文件夹，只挂载文件夹至容器中
 ```

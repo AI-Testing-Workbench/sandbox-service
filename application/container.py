@@ -119,6 +119,7 @@ __all__ = [
     "query_container_ids",
     "list_orphan_container_ids",
     "delete_orphan_containers",
+    "cleanup_orphan_containers",
     "delete_sandboxes_by_pod_names",
     "list_admin_containers",
     "get_admin_container",
@@ -206,7 +207,7 @@ async def delete_missing_container_record(container_id: str) -> None:
         async with session_scope() as session:
             repo = ContainerRepository(session)
             row = await repo.get(container_id)
-            if row is None or row.deleted_at is not None:
+            if row is None or row.deleted_at is not None or row.stop_at is not None:
                 return
             service_id = row.service_id
             await cleanup_volume_for_container(row.user_id, row.service_id)
@@ -548,49 +549,24 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                 get_git_session_store().discard_session(service_id)
                 _raise_volume_creation_error("准备卷目录", exc)
 
-        container_type_value: str = params.container_type.value
-        env: dict[str, str] = {
-            "TESTAGENT_CLOUD_MODE": "1",  # 标记容器为云端
-            "TESTAGENT_CLOUD_SERVICE_USER": params.user_id,
-            "TESTAGENT_CLOUD_SERVICE_ID": service_id,
-            "TESTAGENT_CLOUD_SERVICE_URL": settings.service_url,
-            "TESTAGENT_CLOUD_GITEE_USER": gitee_user,
-            "TESTAGENT_CLOUD_GITEE_REPOSITORY": gitee_repository,
-            "TESTAGENT_CLOUD_GITEE_BRANCH": params.gitee_branch or "",
-            "TESTAGENT_CLOUD_GITEE_URL": gitee_url,
-            "TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT": (
-                "true" if params.authorize_general_account is True else "false"
-            ),
-            "TESTAGENT_CLOUD_PIP_URL": settings.container_pip_index_url,
-            "TESTAGENT_CLOUD_NPM_URL": settings.container_npm_registry,
-        }
-        if params.container_type == ContainerType.AUTOTEST_CLOUD:
-            # 自动化跑批容器启用 Chrome/VNC（镜像内 start.sh 据此拉起，sshd 照常运行）
-            env["TESTAGENT_ENABLE_CHROME"] = "1"
-
+        container_type_value = params.container_type.value
         container_name = uuid.uuid4().hex[:12]
-        metadata: dict[str, str] = {
-            "name": container_name,
-            _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
-            _CONTAINER_TYPE_METADATA_KEY: container_type_value,
-        }
         try:
             opensandbox_client = get_opensandbox_client()
-            create_kwargs: dict[str, Any] = {
-                "name": container_name,
-                "env": env,
-                "metadata": metadata,
-                "resource_limits": await _resource_limits(params),
-            }
-            if volumes is not None:
-                created = await opensandbox_client.create(
-                    image,
-                    **create_kwargs,
-                    volumes=volumes,
-                )
-            else:
-                # 卷功能关闭时不向替身或 SDK 传递 volumes 参数。
-                created = await opensandbox_client.create(image, **create_kwargs)
+            create_kwargs = _sandbox_create_kwargs(
+                name=container_name,
+                service_id=service_id,
+                user_id=params.user_id,
+                container_type=container_type_value,
+                gitee_user=gitee_user,
+                gitee_repository=gitee_repository,
+                gitee_branch=params.gitee_branch,
+                gitee_url=gitee_url,
+                authorize_general_account=params.authorize_general_account is True,
+                resource_limits=await _resource_limits(params),
+                volumes=volumes,
+            )
+            created = await opensandbox_client.create(image, **create_kwargs)
         except Exception as exc:
             # 创建响应丢失但远端已完成创建时，SDK 无法提供容器 ID；使用本次唯一的
             # metadata name 找回并回收这个无法直接寻址的远端资源。
@@ -708,6 +684,53 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             status=ContainerStatus.PENDING,
             service_id=service_id,
         )
+
+
+def _sandbox_create_kwargs(
+    *,
+    name: str,
+    service_id: str,
+    user_id: str,
+    container_type: str,
+    gitee_user: str,
+    gitee_repository: str,
+    gitee_branch: Optional[str],
+    gitee_url: str,
+    authorize_general_account: bool,
+    resource_limits: dict[str, str],
+    volumes: Optional[list[SandboxVolume]],
+) -> dict[str, Any]:
+    """Build common OpenSandbox metadata, environment, resources, and volumes."""
+    env = {
+        "TESTAGENT_CLOUD_MODE": "1",
+        "TESTAGENT_CLOUD_SERVICE_USER": user_id,
+        "TESTAGENT_CLOUD_SERVICE_ID": service_id,
+        "TESTAGENT_CLOUD_SERVICE_URL": settings.service_url,
+        "TESTAGENT_CLOUD_GITEE_USER": gitee_user,
+        "TESTAGENT_CLOUD_GITEE_REPOSITORY": gitee_repository,
+        "TESTAGENT_CLOUD_GITEE_BRANCH": gitee_branch or "",
+        "TESTAGENT_CLOUD_GITEE_URL": gitee_url,
+        "TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT": (
+            "true" if authorize_general_account else "false"
+        ),
+        "TESTAGENT_CLOUD_PIP_URL": settings.container_pip_index_url,
+        "TESTAGENT_CLOUD_NPM_URL": settings.container_npm_registry,
+    }
+    if container_type == ContainerType.AUTOTEST_CLOUD.value:
+        env["TESTAGENT_ENABLE_CHROME"] = "1"
+    create_kwargs: dict[str, Any] = {
+        "name": name,
+        "env": env,
+        "metadata": {
+            "name": name,
+            _SOURCE_METADATA_KEY: _SOURCE_METADATA_VALUE,
+            _CONTAINER_TYPE_METADATA_KEY: container_type,
+        },
+        "resource_limits": resource_limits,
+    }
+    if volumes is not None:
+        create_kwargs["volumes"] = volumes
+    return create_kwargs
 
 
 async def _wait_for_container_running(
@@ -922,10 +945,15 @@ async def get_status(
 async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
     """根据已解析的业务记录查询运行态，内部仍以真实容器 ID 访问后端。"""
     container_id = row.container_id
+    if row.stop_at is not None:
+        return _stopped_status_view(row)
     try:
         status: SandboxStatus = await get_opensandbox_client().get_status(container_id)
     except SandboxNotFoundError as exc:
         await delete_missing_container_record(container_id)
+        current = await _get_service_record_snapshot(row.service_id)
+        if current is not None and current.stop_at is not None:
+            return _stopped_status_view(current)
         raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception as exc:
         _raise_backend_service_error("获取容器状态", exc)
@@ -941,6 +969,9 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         endpoint = ep.endpoint
     except SandboxNotFoundError as exc:
         await delete_missing_container_record(container_id)
+        current = await _get_service_record_snapshot(row.service_id)
+        if current is not None and current.stop_at is not None:
+            return _stopped_status_view(current)
         raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception as exc:  # noqa: BLE001
         _raise_backend_service_error("获取容器端点", exc)
@@ -948,7 +979,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
     # A paused/transitioning sandbox cannot serve execd metrics.  Metrics are
     # optional, so do not delay the lifecycle status response for that probe.
     if business is ContainerStatus.RUNNING:
-        cpu_usage, memory_usage = await _get_metrics(container_id)
+        cpu_usage, memory_usage = await _get_metrics(container_id, row.service_id)
     else:
         cpu_usage, memory_usage = None, None
 
@@ -970,6 +1001,37 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         gitee_user=row.gitee_user,
         gitee_repository=row.gitee_repository,
     )
+
+
+def _stopped_status_view(row: ContainerRow) -> ContainerStatusView:
+    """Build a stopped view without probing a deliberately deleted backend."""
+    from scheduler.lifecycle import get_cached_status
+
+    cached_status = get_cached_status(row.container_id)
+    lifecycle_status = (
+        ContainerStatus.PENDING
+        if cached_status is ContainerStatus.PENDING
+        else ContainerStatus.STOPPED
+    )
+    return ContainerStatusView(
+        container_id=row.container_id,
+        service_id=row.service_id,
+        status=resolve_container_status(row.git_fin_status, lifecycle_status),
+        container_type=row.container_type,
+        started_at=None,
+        expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
+        gitee_url=row.gitee_url,
+        gitee_branch=row.gitee_branch,
+        api_token=row.api_token,
+        gitee_user=row.gitee_user,
+        gitee_repository=row.gitee_repository,
+        git_fin_status=get_public_git_fin_status(row.git_fin_status),
+    )
+
+
+async def _get_service_record_snapshot(service_id: str) -> Optional[ContainerRow]:
+    async with session_scope() as session:
+        return await ContainerRepository(session).get_by_service_id(service_id)
 
 
 async def get_container_logs(service_id: str) -> str:
@@ -995,77 +1057,116 @@ async def get_container_logs(service_id: str) -> str:
 # 容器操作（T6.3）
 # ---------------------------------------------------------------------------
 async def start(service_id: str) -> None:
-    """启动容器；已运行重复调用幂等成功（v4 §11.3）。"""
-    row = await _require_active_service_record(service_id)
-    container_id = row.container_id
-    try:
-        await get_opensandbox_client().start(container_id)
-    except SandboxFailedError as exc:
-        raise BusinessConflictError("失败状态的云端沙箱不能直接启动，请先删除后重新创建") from exc
-    except Exception as exc:
-        _raise_backend_service_error("启动容器", exc)
-    from scheduler.lifecycle import mark_container_start_requested
+    """启动容器；后端已被删除时按原服务记录重建。"""
+    async with lifecycle_guard():
+        row = await _require_active_service_record(service_id)
+        container_id = row.container_id
+        try:
+            await get_opensandbox_client().start(container_id)
+        except SandboxNotFoundError:
+            await _persist_stop_intent(service_id, container_id)
+            from scheduler.lifecycle import mark_container_start_requested, mark_container_stopped
 
-    mark_container_start_requested(container_id)
+            mark_container_start_requested(container_id)
+            try:
+                new_container_id = await _rebuild_backend(service_id)
+            except Exception:
+                mark_container_stopped(container_id)
+                raise
+            mark_container_start_requested(new_container_id)
+            return
+        except SandboxFailedError as exc:
+            raise BusinessConflictError("失败状态的云端沙箱不能直接启动，请先删除后重新创建") from exc
+        except Exception as exc:
+            _raise_backend_service_error("启动容器", exc)
+        await _clear_stop_intent(service_id, container_id)
+        from scheduler.lifecycle import mark_container_start_requested
+
+        mark_container_start_requested(container_id)
 
 
 async def stop(service_id: str) -> None:
-    """正常停止；已停止重复调用幂等成功（v4 §11.3）。"""
-    row = await _require_active_service_record(service_id)
-    container_id = row.container_id
-    try:
-        await get_opensandbox_client().stop(container_id)
-    except Exception as exc:
-        _raise_backend_service_error("停止容器", exc)
-    # OpenSandbox Pause is accepted before the runtime necessarily reports
-    # Paused.  Publish a transition state immediately instead of serving an
-    # older running snapshot from the admin API.
-    from scheduler.lifecycle import mark_container_stop_requested
+    """物理删除运行后端并保留业务记录和 PVC 卷。"""
+    async with lifecycle_guard():
+        row = await _require_active_service_record(service_id)
+        container_id = row.container_id
+        await _persist_stop_intent(service_id, container_id)
+        from scheduler.lifecycle import mark_container_stop_requested
 
-    mark_container_stop_requested(container_id)
+        mark_container_stop_requested(container_id)
+        try:
+            await get_opensandbox_client().delete(container_id)
+        except SandboxNotFoundError:
+            pass
+        except Exception as exc:
+            _raise_backend_service_error("停止容器", exc)
+        from scheduler.lifecycle import mark_container_stopped
+
+        mark_container_stopped(container_id)
 
 
 async def restart(service_id: str) -> None:
-    """停止并重新启动；Container ID 不变（v4 §11.3）。"""
-    row = await _require_active_service_record(service_id)
-    container_id = row.container_id
-    try:
-        await get_opensandbox_client().restart(container_id)
-    except SandboxFailedError as exc:
-        raise BusinessConflictError("失败状态的云端沙箱不能直接重启，请先删除后重新创建") from exc
-    except Exception as exc:
-        _raise_backend_service_error("重启容器", exc)
-    from scheduler.lifecycle import mark_container_start_requested
+    """重启容器；仅缺失后端时重建，正常 Restart 保持原 ID。"""
+    async with lifecycle_guard():
+        row = await _require_active_service_record(service_id)
+        container_id = row.container_id
+        try:
+            await get_opensandbox_client().restart(container_id)
+        except SandboxNotFoundError:
+            await _persist_stop_intent(service_id, container_id)
+            from scheduler.lifecycle import mark_container_start_requested, mark_container_stopped
 
-    mark_container_start_requested(container_id)
+            mark_container_start_requested(container_id)
+            try:
+                new_container_id = await _rebuild_backend(service_id)
+            except Exception:
+                mark_container_stopped(container_id)
+                raise
+            mark_container_start_requested(new_container_id)
+            return
+        except SandboxFailedError as exc:
+            raise BusinessConflictError("失败状态的云端沙箱不能直接重启，请先删除后重新创建") from exc
+        except Exception as exc:
+            _raise_backend_service_error("重启容器", exc)
+        await _clear_stop_intent(service_id, container_id)
+        from scheduler.lifecycle import mark_container_start_requested
+
+        mark_container_start_requested(container_id)
 
 
 # ---------------------------------------------------------------------------
 # 业务删除（T6.4）
 # ---------------------------------------------------------------------------
 async def business_delete(service_id: str) -> None:
-    """业务删除：OpenSandbox Stop + 写 `deleted_at`，底层容器保留。
+    """业务删除：物理删除后端并将记录和卷保留到 retention 到期。
 
     已业务删除的容器再次删除一律视为不存在（404 语义，v4 §14.9 由最新约定覆盖）。
     """
-    async with session_scope() as session:
-        repo = ContainerRepository(session)
-        row = await _require_service_record(repo, service_id)
-        container_id = row.container_id
-        service_id = row.service_id
+    async with lifecycle_guard():
+        async with session_scope() as session:
+            repo = ContainerRepository(session)
+            row = await _require_service_record(repo, service_id)
+            container_id = row.container_id
+            await repo.business_delete(container_id, _now_iso())
+        get_git_session_store().suspend_session(service_id)
         try:
-            await get_opensandbox_client().stop(container_id)
+            await get_opensandbox_client().delete(container_id)
+        except SandboxNotFoundError:
+            pass
         except Exception as exc:
-            _raise_backend_service_error("停止容器", exc)
-        await repo.business_delete(container_id, _now_iso())
-    get_git_session_store().discard_session(service_id)
+            _raise_backend_service_error("删除容器", exc)
+        async with session_scope() as session:
+            await ContainerRepository(session).clear_stop_intent(container_id)
+        from scheduler.lifecycle import discard_container_status
+
+        discard_container_status(container_id)
 
 
 # ---------------------------------------------------------------------------
 # 恢复（T6.5，仅管理 API）
 # ---------------------------------------------------------------------------
 async def restore(service_id: str, expiration_hours: int) -> ContainerStatusView:
-    """恢复：清除 `deleted_at`、重写 `created_at`（当前时间）与 `expiration_hours`，并启动容器。
+    """恢复：清除 `deleted_at`、重写时间并启动或重建后端。
 
     `authorize_general_account` 不重新指定，保持原值（变更 #2）。
     """
@@ -1082,23 +1183,37 @@ async def restore(service_id: str, expiration_hours: int) -> ContainerStatusView
             if row.deleted_at is None:
                 raise BusinessConflictError("云端沙箱未处于业务删除状态，无法恢复")
             container_id = row.container_id
-            try:
-                # OpenSandbox 的普通 start 对不存在容器按幂等成功处理；恢复必须先严格确认远端记录仍存在。
-                await get_opensandbox_client().get_status(container_id)
-            except SandboxNotFoundError as exc:
-                raise ContainerNotFoundError("云端沙箱后端不存在，无法恢复") from exc
-            except Exception as exc:
-                _raise_backend_service_error("检查容器状态", exc)
-            try:
-                await get_opensandbox_client().start(container_id)
-            except Exception as exc:
-                _raise_backend_service_error("启动容器", exc)
-            await repo.business_restore(container_id, _now_iso(), expiration_hours)
+            restored_at = _now_iso()
+        try:
+            await get_opensandbox_client().start(container_id)
+        except SandboxNotFoundError:
+            await _rebuild_backend(
+                service_id,
+                restore_data=(restored_at, expiration_hours),
+            )
+        except SandboxFailedError as exc:
+            raise BusinessConflictError("失败状态的云端沙箱不能恢复") from exc
+        except Exception as exc:
+            _raise_backend_service_error("启动容器", exc)
+        else:
+            async with session_scope() as session:
+                await ContainerRepository(session).business_restore(
+                    container_id,
+                    restored_at,
+                    expiration_hours,
+                )
+            get_git_session_store().resume_suspended_session(service_id)
+            from scheduler.lifecycle import mark_container_start_requested
+
+            mark_container_start_requested(container_id)
 
     return await get_status(service_id)
 
 
-async def _get_metrics(container_id: str) -> tuple[Optional[float], Optional[float]]:
+async def _get_metrics(
+    container_id: str,
+    service_id: str,
+) -> tuple[Optional[float], Optional[float]]:
     """读取容器资源使用率；指标不可用时返回空值且不影响状态查询。"""
     get_metrics = getattr(get_opensandbox_client(), "get_metrics", None)
     if not callable(get_metrics):
@@ -1109,12 +1224,131 @@ async def _get_metrics(container_id: str) -> tuple[Optional[float], Optional[flo
         metrics = await get_metrics(container_id)
     except SandboxNotFoundError as exc:
         await delete_missing_container_record(container_id)
+        current = await _get_service_record_snapshot(service_id)
+        if current is not None and current.stop_at is not None:
+            return None, None
         raise ContainerNotFoundError("云端沙箱后端不存在") from exc
     except Exception:
         return None, None
     if not isinstance(metrics, SandboxMetrics):
         return None, None
     return metrics.cpu_usage, metrics.memory_usage
+
+
+async def _persist_stop_intent(service_id: str, container_id: str) -> None:
+    """Commit the intent before an expected backend deletion or reconstruction."""
+    async with session_scope() as session:
+        repo = ContainerRepository(session)
+        row = await repo.get_by_service_id(service_id)
+        if row is None or row.deleted_at is not None or row.container_id != container_id:
+            raise ContainerNotFoundError("云端沙箱不存在")
+        if row.stop_at is None and not await repo.set_stop_intent(container_id, _now_iso()):
+            raise ContainerNotFoundError("云端沙箱不存在")
+
+
+async def _clear_stop_intent(service_id: str, container_id: str) -> None:
+    async with session_scope() as session:
+        row = await ContainerRepository(session).get_by_service_id(service_id)
+        if row is not None and row.container_id == container_id and row.deleted_at is None:
+            await ContainerRepository(session).clear_stop_intent(container_id)
+
+
+# noinspection broad-exception
+async def _rebuild_backend(
+    service_id: str,
+    *,
+    restore_data: Optional[tuple[str, int]] = None,
+) -> str:
+    """Create a backend for an existing service without cloning or reinitializing Git."""
+    async with _create_lock:
+        async with session_scope() as session:
+            row = await _require_service_record(
+                ContainerRepository(session),
+                service_id,
+                include_deleted=restore_data is not None,
+            )
+            if restore_data is None and row.deleted_at is not None:
+                raise ContainerNotFoundError("云端沙箱不存在")
+            previous_container_id = row.container_id
+            user_id = row.user_id
+            container_type = row.container_type
+            service_image = row.image
+            git_user = row.gitee_user
+            git_repository = row.gitee_repository
+            git_branch = row.gitee_branch or ""
+            git_url = row.gitee_url
+            authorize_general_account = bool(row.authorize_general_account)
+
+        name = uuid.uuid4().hex[:12]
+        cpu, memory = await _cfg_resource_limits()
+        volumes: Optional[list[SandboxVolume]] = None
+        if settings.filebrowser_enabled:
+            plan = build_volume_path_plan(user_id, service_id)
+            volumes = build_sandbox_volumes(plan, settings.pvc_name or "")
+        create_kwargs = _sandbox_create_kwargs(
+            name=name,
+            service_id=service_id,
+            user_id=user_id,
+            container_type=container_type,
+            gitee_user=git_user,
+            gitee_repository=git_repository,
+            gitee_branch=git_branch,
+            gitee_url=git_url,
+            authorize_general_account=authorize_general_account,
+            resource_limits={"cpu": format(cpu, "g"), "memory": f"{memory}Gi"},
+            volumes=volumes,
+        )
+
+        client = get_opensandbox_client()
+        try:
+            created = await client.create(service_image, **create_kwargs)
+        except Exception as exc:  # noqa: BLE001
+            await _cleanup_failed_remote_create(name)
+            _raise_backend_service_error("重建容器", exc)
+
+        new_container_id = created.container_id
+        store = get_git_session_store()
+        session_rebound = False
+        try:
+            await _wait_for_container_running(client, new_container_id)
+            session_rebound = store.replace_container_id(
+                service_id,
+                previous_container_id,
+                new_container_id,
+            )
+            async with session_scope() as session:
+                repo = ContainerRepository(session)
+                if not await repo.replace_container_id(
+                    service_id,
+                    previous_container_id,
+                    new_container_id,
+                    restore=restore_data,
+                ):
+                    raise ContainerNotFoundError("云端沙箱记录已变化，无法更新后端 ID")
+        except Exception as exc:  # noqa: BLE001
+            if session_rebound:
+                try:
+                    store.replace_container_id(
+                        service_id,
+                        new_container_id,
+                        previous_container_id,
+                    )
+                except Exception:
+                    logger.exception("重建失败后恢复 Git 会话绑定失败: %s", service_id)
+            try:
+                await client.delete(new_container_id)
+            except Exception:  # noqa: BLE001
+                logger.exception("重建失败后清理新后端容器失败: %s", new_container_id)
+            if isinstance(exc, (ContainerNotFoundError, BusinessConflictError)):
+                raise
+            _raise_backend_service_error("重建容器", exc)
+
+        from scheduler.lifecycle import discard_container_status
+
+        discard_container_status(previous_container_id)
+        if restore_data is not None:
+            store.resume_suspended_session(service_id)
+        return new_container_id
 
 
 # ---------------------------------------------------------------------------
@@ -1169,7 +1403,7 @@ async def set_expiration(service_id: str, expiration_hours: int) -> ExpirationVi
 # 用户/容器映射
 # ---------------------------------------------------------------------------
 async def map_container_id(user_id: str, service_id: str) -> str:
-    """按用户 ID 和内部 `service_id` 返回业务有效容器 ID。"""
+    """按用户和服务 ID 返回当前可用后端 ID；已停止服务没有可映射后端。"""
     if not user_id or not user_id.strip():
         raise InvalidArgumentError("user_id 不能为空")
     if not service_id or not service_id.strip():
@@ -1178,7 +1412,7 @@ async def map_container_id(user_id: str, service_id: str) -> str:
 
     async with session_scope() as session:
         row = await ContainerRepository(session).get_by_service_id(service_id)
-        if row is None or row.deleted_at is not None:
+        if row is None or row.deleted_at is not None or row.stop_at is not None:
             raise ContainerNotFoundError("云端沙箱不存在")
         ensure_user_not_blacklisted(row.user_id)
         if row.user_id != user_id:
@@ -1291,6 +1525,33 @@ async def delete_orphan_containers(container_ids: list[str]) -> None:
         raise ExternalDependencyError(
             f"以下孤儿容器删除失败: {', '.join(failed_ids)}"
         )
+
+
+async def cleanup_orphan_containers() -> list[str]:
+    """Delete all remote service containers with no DB row under the create lock."""
+    deleted: list[str] = []
+    async with _create_lock:
+        orphan_ids = await _list_orphan_container_ids_locked()
+        if not orphan_ids:
+            return deleted
+        client = get_opensandbox_client()
+        for container_id in orphan_ids:
+            try:
+                await client.delete(container_id)
+            except SandboxNotFoundError:
+                deleted.append(container_id)
+            except Exception as exc:  # noqa: BLE001
+                logger.error(
+                    "Scheduler 删除孤儿容器失败: %s: %s: %s",
+                    container_id,
+                    type(exc).__name__,
+                    exc,
+                )
+            else:
+                deleted.append(container_id)
+    if deleted:
+        logger.info("Scheduler 孤儿清理: 删除 %d 个远端容器", len(deleted))
+    return deleted
 
 
 async def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:

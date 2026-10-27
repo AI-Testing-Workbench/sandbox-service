@@ -66,6 +66,7 @@ class Container(Base):
     created_at: Mapped[str] = mapped_column(String(32))
     expiration_hours: Mapped[int] = mapped_column(Integer)
     deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    stop_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
 
 class GitCredentialRow(Base):

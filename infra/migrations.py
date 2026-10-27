@@ -8,6 +8,7 @@ Alembic 固定为字符串；`schema_version.version` 是本服务额外维护�
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from threading import Lock
 from typing import cast
@@ -16,11 +17,13 @@ from typing import cast
 from alembic import command
 # noinspection package-requirements
 from alembic.config import Config
-from sqlalchemy import Engine, text
+from sqlalchemy import Engine, inspect, text
 from sqlalchemy.ext.asyncio import AsyncEngine
 from sqlalchemy.engine import Connection
 
 from config import Constants
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "get_schema_version",
@@ -45,13 +48,28 @@ def _alembic_config(engine: Engine) -> Config:
 def upgrade_database(engine: Engine) -> None:
     """在进程内串行执行全部待处理迁移。"""
     with _migration_lock:
-        with engine.begin() as connection:
+        with engine.connect() as connection:
             config = _alembic_config(engine)
             # Reuse the migration connection so in-memory SQLite works and version
             # synchronization remains atomic.
             config.attributes["connection"] = connection
-            command.upgrade(config, "head")
-            _synchronize_schema_version(connection)
+            try:
+                command.upgrade(config, "head")
+            except Exception:
+                if connection.in_transaction():
+                    connection.rollback()
+                # noinspection broad-exception
+                try:
+                    with connection.begin():
+                        if inspect(connection).has_table("alembic_version"):
+                            _synchronize_schema_version(connection)
+                except Exception:
+                    logger.exception("迁移失败后同步已提交的 schema revision 失败")
+                raise
+            if connection.in_transaction():
+                connection.commit()
+            with connection.begin():
+                _synchronize_schema_version(connection)
 
 
 # noinspection SqlDialectInspection

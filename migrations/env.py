@@ -83,6 +83,7 @@ def _run_migrations(connection: Connection) -> None:
         target_metadata=target_metadata,
         compare_type=True,
         render_as_batch=True,
+        transactional_ddl=True,
         include_object=_include_object,
     )
     with context.begin_transaction():
