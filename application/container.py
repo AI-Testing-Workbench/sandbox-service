@@ -38,7 +38,7 @@ from application.volume_storage import (
     prepare_volume_directories,
     rollback_volume_directories,
 )
-from config import Constants, settings
+from config import Constants, MAX_CONTAINER_EXPIRATION_HOURS, settings
 from config import get_container_count_limit as _cfg_count_limit
 from config import get_default_image as _cfg_default_image
 from config import get_container_resource_limits as _cfg_resource_limits
@@ -430,6 +430,14 @@ def _now_iso() -> str:
     return _now().isoformat()
 
 
+def _validate_expiration_hours(expiration_hours: int) -> None:
+    if not 0 <= expiration_hours <= MAX_CONTAINER_EXPIRATION_HOURS:
+        raise InvalidArgumentError(
+            "expiration_hours 必须在 0 到 "
+            f"{MAX_CONTAINER_EXPIRATION_HOURS} 之间"
+        )
+
+
 # ---------------------------------------------------------------------------
 # 容器创建（T6.1 + T6.2）
 # ---------------------------------------------------------------------------
@@ -480,12 +488,11 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
     gitee_user = _normalise_optional_gitee_value(params.gitee_user)
     gitee_repository = _normalise_optional_gitee_value(params.gitee_repository)
-    image = await _resolve_image(params)
     # 未指定时长时，使用创建后自动业务删除的默认有效时长。
     expiration_hours = params.expiration_hours if params.expiration_hours is not None \
         else settings.container_default_expiration_hours
-    if expiration_hours < 0:
-        raise InvalidArgumentError("expiration_hours 不能为负数")
+    _validate_expiration_hours(expiration_hours)
+    image = await _resolve_image(params)
     async with _create_lock:
         async with session_scope() as session:
             repo = ContainerRepository(session)
@@ -1223,8 +1230,7 @@ async def restore(service_id: str, expiration_hours: int) -> ContainerStatusView
 
     `authorize_general_account` 不重新指定，保持原值（变更 #2）。
     """
-    if expiration_hours < 0:
-        raise InvalidArgumentError("expiration_hours 不能为负数")
+    _validate_expiration_hours(expiration_hours)
     async with lifecycle_guard():
         async with session_scope() as session:
             repo = ContainerRepository(session)
@@ -1436,8 +1442,7 @@ async def permanent_delete(service_id: str) -> None:
 # ---------------------------------------------------------------------------
 async def set_expiration(service_id: str, expiration_hours: int) -> ExpirationView:
     """仅修改 `expiration_hours`，不重置 `created_at`；0 表示永不过期（v4 §14.8）。"""
-    if expiration_hours < 0:
-        raise InvalidArgumentError("expiration_hours 不能为负数")
+    _validate_expiration_hours(expiration_hours)
     async with lifecycle_guard():
         async with session_scope() as session:
             repo = ContainerRepository(session)

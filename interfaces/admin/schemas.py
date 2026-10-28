@@ -8,7 +8,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
-from config import settings
+from config import MAX_CONTAINER_EXPIRATION_HOURS, settings
 from domain.models import ContainerType
 from interfaces.common import (
     ContainerCreateRequestBase,
@@ -147,6 +147,7 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
     expiration_hours: Optional[int] = Field(
         default=settings.container_default_expiration_hours,
         ge=0,
+        le=MAX_CONTAINER_EXPIRATION_HOURS,
         description="云端沙箱创建后的剩余过期时间，0 表示永不过期",
     )
     cpu: Optional[float] = Field(default=None, gt=0, description="CPU 核数")

@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from config import settings
+from config import MAX_CONTAINER_EXPIRATION_HOURS, settings
 from domain.models import ContainerType
 
 __all__ = [
@@ -97,6 +97,7 @@ class ExpirationRequest(BaseModel):
 
     expiration_hours: int = Field(
         ge=0,
+        le=MAX_CONTAINER_EXPIRATION_HOURS,
         description="云端沙箱创建后的剩余过期时间，0 表示永不过期",
     )
 
