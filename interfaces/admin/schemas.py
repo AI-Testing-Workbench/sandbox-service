@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
 from config import settings
 from domain.models import ContainerType
@@ -262,6 +262,10 @@ class ContainerLimitRequest(BaseModel):
     container_limit: int = Field(ge=0, description="云端沙箱数量上限，0 表示取消数量限制")
     cpu: float = Field(gt=0, description="全部云端沙箱 CPU 限制，单位为核数")
     memory: int = Field(gt=0, description="全部云端沙箱内存限制，单位为 Gi")
+    delete_failed_container: StrictBool = Field(
+        default=True,
+        description="自动删除码云创建失败的容器",
+    )
 
 
 class ContainerLimitResponse(BaseModel):
@@ -270,3 +274,4 @@ class ContainerLimitResponse(BaseModel):
     container_limit: int = Field(description="当前云端沙箱数量限制")
     cpu: float = Field(description="全部云端沙箱 CPU 限制，单位为核数")
     memory: int = Field(description="全部云端沙箱内存限制，单位为 Gi")
+    delete_failed_container: bool = Field(description="自动删除码云创建失败的容器")

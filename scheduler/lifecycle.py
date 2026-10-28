@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional, cast
 from zoneinfo import ZoneInfo
 
-from config import Constants, settings
+from config import Constants, get_delete_failed_container, settings
 from application import container as _container
 from domain.models import (
     ContainerStatus,
@@ -36,6 +36,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "expire_containers",
+    "delete_failed_containers",
     "purge_containers",
     "refresh_status_cache",
     "compensate",
@@ -136,6 +137,48 @@ async def expire_containers() -> list[str]:
     if expired:
         logger.info("业务删除检查: 业务删除 %d 个", len(expired))
     return expired
+
+
+async def delete_failed_containers() -> list[str]:
+    """Business-delete active Git-failed containers after fifteen minutes of age."""
+    if not await get_delete_failed_container():
+        return []
+
+    async with session_scope() as session:
+        candidates = [
+            (row.container_id, row.service_id, row.created_at)
+            for row in await ContainerRepository(session).list_active()
+            if isinstance(row.git_fin_status, str)
+            and row.git_fin_status.startswith("failed_")
+        ]
+
+    deleted: list[str] = []
+    for container_id, service_id, created_at in candidates:
+        try:
+            created = datetime.fromisoformat(created_at)
+            if created.tzinfo is None:
+                created = created.replace(tzinfo=_TZ)
+            if created + timedelta(minutes=15) > _now():
+                continue
+            if await _container.business_delete_failed_container(
+                service_id,
+                expected_created_at=created_at,
+            ):
+                deleted.append(container_id)
+        except (TypeError, ValueError):
+            logger.exception("容器创建时间字段非法，跳过失败容器: %s", container_id)
+        except OpenSandboxError as exc:
+            logger.error("失败容器业务删除失败: %s: %s", container_id, exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "失败容器业务删除失败: %s: %s: %s",
+                container_id,
+                type(exc).__name__,
+                exc,
+            )
+    if deleted:
+        logger.info("失败容器检查: 业务删除 %d 个", len(deleted))
+    return deleted
 
 
 # ---------------------------------------------------------------------------
@@ -587,6 +630,7 @@ async def run_cycle() -> list[str]:
     done: list[str] = []
     steps: tuple[Callable[[], Awaitable[object]], ...] = (
         expire_containers,
+        delete_failed_containers,
         purge_containers,
         refresh_status_cache,
         cleanup_orphan_containers,

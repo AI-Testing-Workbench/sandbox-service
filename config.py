@@ -5,7 +5,7 @@
 - v4 §5.1 环境变量（`TA_SS_*`）：必填缺失或非法值启动失败并明确报错，整数无法解析启动失败，
   `TA_SS_CONTAINER_CREATE_LIMIT_MODE` 仅允许 `user` / `repository`。
 - v4 §5.2 全局常量（`Constants` 枚举）。
-- v4 §4.3 / §6.2.2 settings（`default_image` / `container_count_limit`）读写归属本模块；
+- v4 §4.3 / §6.2.2 settings（镜像、容器限制及功能开关）读写归属本模块；
   应用层与接口层不直接操作 settings 表。
 
 配置在模块加载时初始化（Python 模块缓存保证整个进程仅执行一次）。
@@ -37,6 +37,8 @@ __all__ = [
     "set_container_count_limit",
     "get_container_resource_limits",
     "set_container_resource_limits",
+    "get_delete_failed_container",
+    "set_delete_failed_container",
 ]
 
 _ENV_PREFIX = "TA_SS_"
@@ -385,7 +387,7 @@ settings: Settings = Settings(
 
 
 # ---------------------------------------------------------------------------
-# settings 读写（v4 §4.3 / §6.2.2）：默认镜像、容器数量及资源限制
+# settings 读写（v4 §4.3 / §6.2.2）：默认镜像、容器限制及功能开关
 # 应用层与接口层通过本模块访问，不直接操作 settings 表。
 # ---------------------------------------------------------------------------
 
@@ -393,6 +395,7 @@ SETTINGS_KEY_DEFAULT_IMAGE = "default_image"
 SETTINGS_KEY_CONTAINER_COUNT_LIMIT = "container_count_limit"
 SETTINGS_KEY_CONTAINER_CPU_LIMIT = "container_cpu_limit"
 SETTINGS_KEY_CONTAINER_MEMORY_LIMIT = "container_memory_limit"
+SETTINGS_KEY_DELETE_FAILED_CONTAINER = "delete_failed_container"
 
 #: autotest_cloud 类型的默认镜像 key（testagent_cloud 沿用历史 key `default_image`）
 SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD = "default_image_autotest_cloud"
@@ -503,3 +506,25 @@ async def set_container_resource_limits(cpu: float, memory: int) -> None:
     async with _settings_scope() as repo:
         await repo.set(SETTINGS_KEY_CONTAINER_CPU_LIMIT, format(cpu, "g"))
         await repo.set(SETTINGS_KEY_CONTAINER_MEMORY_LIMIT, str(memory))
+
+
+async def get_delete_failed_container() -> bool:
+    """读取失败容器自动删除开关；未配置时默认开启。"""
+    async with _settings_scope() as repo:
+        row = await repo.get(SETTINGS_KEY_DELETE_FAILED_CONTAINER)
+    if row is None:
+        return True
+    value = row.value.strip().lower()
+    if value == "true":
+        return True
+    if value == "false":
+        return False
+    raise ConfigError(f"数据库中的失败容器自动删除配置非法: {row.value!r}")
+
+
+async def set_delete_failed_container(value: bool) -> None:
+    """持久化失败容器自动删除开关。"""
+    if not isinstance(value, bool):
+        raise ConfigError("失败容器自动删除配置必须为布尔值")
+    async with _settings_scope() as repo:
+        await repo.set(SETTINGS_KEY_DELETE_FAILED_CONTAINER, str(value).lower())

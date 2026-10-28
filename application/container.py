@@ -17,7 +17,7 @@ import math
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any, AsyncIterator, NoReturn, Optional, cast
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
@@ -44,6 +44,8 @@ from config import get_default_image as _cfg_default_image
 from config import get_container_resource_limits as _cfg_resource_limits
 from config import set_container_count_limit as _cfg_set_count_limit
 from config import set_container_resource_limits as _cfg_set_resource_limits
+from config import get_delete_failed_container as _cfg_get_delete_failed_container
+from config import set_delete_failed_container as _cfg_set_delete_failed_container
 from domain.errors import (
     BusinessConflictError,
     ContainerNotFoundError,
@@ -112,6 +114,7 @@ __all__ = [
     "stop",
     "restart",
     "business_delete",
+    "business_delete_failed_container",
     "restore",
     "permanent_delete",
     "set_expiration",
@@ -374,6 +377,7 @@ class ContainerLimitView:
     container_limit: int
     cpu: float
     memory: int
+    delete_failed_container: bool
 
 
 @dataclass(frozen=True)
@@ -1145,23 +1149,70 @@ async def business_delete(service_id: str) -> None:
     已业务删除的容器再次删除一律视为不存在（404 语义，v4 §14.9 由最新约定覆盖）。
     """
     async with lifecycle_guard():
-        async with session_scope() as session:
-            repo = ContainerRepository(session)
-            row = await _require_service_record(repo, service_id)
-            container_id = row.container_id
-            await repo.business_delete(container_id, _now_iso())
-        get_git_session_store().suspend_session(service_id)
-        try:
-            await get_opensandbox_client().delete(container_id)
-        except SandboxNotFoundError:
-            pass
-        except Exception as exc:
-            _raise_backend_service_error("删除容器", exc)
-        async with session_scope() as session:
-            await ContainerRepository(session).clear_stop_intent(container_id)
-        from scheduler.lifecycle import discard_container_status
+        await _business_delete_locked(service_id)
 
-        discard_container_status(container_id)
+
+async def business_delete_failed_container(
+    service_id: str,
+    expected_created_at: str,
+) -> bool:
+    """Recheck and delete a failed container whose creation grace period elapsed."""
+    async with lifecycle_guard():
+        if not await _cfg_get_delete_failed_container():
+            return False
+        return await _business_delete_locked(
+            service_id,
+            expected_created_at=expected_created_at,
+        )
+
+
+async def _business_delete_locked(
+    service_id: str,
+    *,
+    expected_created_at: Optional[str] = None,
+) -> bool:
+    async with session_scope() as session:
+        repo = ContainerRepository(session)
+        if expected_created_at is None:
+            row = await _require_service_record(repo, service_id)
+        else:
+            candidate = await repo.get_by_service_id(service_id)
+            if (
+                candidate is None
+                or candidate.deleted_at is not None
+                or not isinstance(candidate.git_fin_status, str)
+                or not candidate.git_fin_status.startswith("failed_")
+                or candidate.created_at != expected_created_at
+                or not _container_creation_grace_elapsed(candidate.created_at)
+            ):
+                return False
+            row = candidate
+        container_id = row.container_id
+        await repo.business_delete(container_id, _now_iso())
+    get_git_session_store().suspend_session(service_id)
+    try:
+        await get_opensandbox_client().delete(container_id)
+    except SandboxNotFoundError:
+        pass
+    except Exception as exc:
+        _raise_backend_service_error("删除容器", exc)
+    async with session_scope() as session:
+        await ContainerRepository(session).clear_stop_intent(container_id)
+    from scheduler.lifecycle import discard_container_status
+
+    discard_container_status(container_id)
+    return True
+
+
+def _container_creation_grace_elapsed(created_at: str) -> bool:
+    """Return whether a container has existed for at least fifteen minutes."""
+    try:
+        created = datetime.fromisoformat(created_at)
+    except (TypeError, ValueError):
+        return False
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=_TZ)
+    return created + timedelta(minutes=15) <= _now()
 
 
 # ---------------------------------------------------------------------------
@@ -1656,6 +1707,7 @@ async def get_container_limit() -> ContainerLimitView:
         container_limit=await _cfg_count_limit(),
         cpu=cpu,
         memory=memory,
+        delete_failed_container=await _cfg_get_delete_failed_container(),
     )
 
 
@@ -1664,6 +1716,7 @@ async def set_container_limit(
     *,
     cpu: float,
     memory: int,
+    delete_failed_container: Optional[bool] = None,
 ) -> ContainerLimitView:
     """设置容器数量及资源限制并返回最新限制视图。"""
     if (
@@ -1685,8 +1738,13 @@ async def set_container_limit(
         or memory <= 0
     ):
         raise InvalidArgumentError("memory 必须为正整数")
+    if delete_failed_container is not None and not isinstance(delete_failed_container, bool):
+        raise InvalidArgumentError("delete_failed_container 必须为布尔值")
     await _cfg_set_count_limit(container_limit)
     await _cfg_set_resource_limits(cpu, memory)
+    if delete_failed_container is not None:
+        async with lifecycle_guard():
+            await _cfg_set_delete_failed_container(delete_failed_container)
     return await get_container_limit()
 
 

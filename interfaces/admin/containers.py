@@ -106,7 +106,7 @@ async def list_containers() -> AdminContainerListResponse:
     responses=api_responses("成功", 200),
 )
 async def get_container_limit() -> ContainerLimitResponse:
-    """获取云端沙箱数量及资源限制配置。"""
+    """获取云端沙箱数量、资源和失败容器自动删除配置。"""
     return _limit_response(await container_service.get_container_limit())
 
 
@@ -117,12 +117,18 @@ async def get_container_limit() -> ContainerLimitResponse:
     responses=api_responses("成功", 200, 400),
 )
 async def set_container_limit(request: ContainerLimitRequest) -> ContainerLimitResponse:
-    """设置云端沙箱数量及资源限制配置。"""
+    """设置云端沙箱数量、资源和失败容器自动删除配置。"""
+    delete_failed_container = (
+        request.delete_failed_container
+        if "delete_failed_container" in request.model_fields_set
+        else None
+    )
     return _limit_response(
         await container_service.set_container_limit(
             request.container_limit,
             cpu=request.cpu,
             memory=request.memory,
+            delete_failed_container=delete_failed_container,
         )
     )
 
@@ -256,4 +262,5 @@ def _limit_response(view: container_service.ContainerLimitView) -> ContainerLimi
         container_limit=view.container_limit,
         cpu=view.cpu,
         memory=view.memory,
+        delete_failed_container=view.delete_failed_container,
     )
