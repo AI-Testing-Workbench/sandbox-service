@@ -155,7 +155,7 @@ def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
     - docker 直连：`host:port/proxy/6080` → 生成 `http://host:port/proxy/6080/vnc.html`
     - K8s 网关路由：`host/sandboxes/<id>/6080`（或带签名路径）→ 原路径下追加 `/vnc.html`
 
-    host/port 直接从 6080 endpoint 解析（不再经 SSH/22 或 /proxy 转发推导），
+    host/port 直接从 6080 endpoint 解析（不再经 SSH/2222 或 /proxy 转发推导），
     不带任何查询参数。仅 autotest_cloud 场景使用。
     """
     if not endpoint:
@@ -447,7 +447,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
 
     - 镜像：`params.image` 为空则使用**该容器类型**的默认镜像；默认镜像未配置抛 400 语义错误。
     - 创建限制（模式 / 数量）在此校验，白名单用户跳过全部；并发通过进程互斥 + SQLite 单写者保证。
-    - 容器名：随机字符串（仅表示容器本身，不承载业务信息）；端口固定 22；
+    - 容器名：随机字符串（仅表示容器本身，不承载业务信息）；SSH 端口固定 2222；
       环境变量注入 `TESTAGENT_CLOUD_SERVICE_USER` /
       `TESTAGENT_CLOUD_SERVICE_ID` / `TESTAGENT_CLOUD_SERVICE_URL` /
       `TESTAGENT_CLOUD_GITEE_USER` / `TESTAGENT_CLOUD_GITEE_REPOSITORY` /

@@ -72,7 +72,7 @@ class Constants(Enum):
     #: 允许上传的镜像文件扩展名
     UPLOAD_ALLOWED_EXTENSIONS = (".tar", ".tar.gz")
     #: 容器内 sshd 监听端口
-    CONTAINER_SSH_PORT = 22
+    CONTAINER_SSH_PORT = 2222
     #: 管理端分页默认每页条数（SHOULD）
     DEFAULT_PAGE_SIZE = 20
     #: 系统统一时区（UTC+8）
