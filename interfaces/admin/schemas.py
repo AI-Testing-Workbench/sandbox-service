@@ -124,6 +124,7 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
                     "user_id": "10001",
                     "image": "localhost:5000/testagent/app:v1",
                     "from": "",
+                    "replace": "",
                     "skip_git": False,
                     "gitee_user": "test_name",
                     "gitee_repository": "test_project",
@@ -143,6 +144,10 @@ class AdminCreateContainerRequest(ContainerCreateRequestBase):
         default=None,
         min_length=1,
         description="完整镜像名称，省略时将使用默认镜像",
+    )
+    replace: str = Field(
+        default="",
+        description="待被替换云端沙箱的服务 ID",
     )
     expiration_hours: Optional[int] = Field(
         default=settings.container_default_expiration_hours,

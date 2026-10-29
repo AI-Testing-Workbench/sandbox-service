@@ -185,6 +185,9 @@ class ContainerRepository:
         new_container_id: str,
         *,
         restore: Optional[tuple[str, int]] = None,
+        image: Optional[str] = None,
+        expiration_hours: Optional[int] = None,
+        clear_api_token: bool = False,
     ) -> bool:
         """Atomically replace a backend ID while preserving its service record."""
         values: dict[str, object] = {
@@ -197,6 +200,12 @@ class ContainerRepository:
                 created_at=restore[0],
                 expiration_hours=restore[1],
             )
+        if image is not None:
+            values["image"] = image
+        if expiration_hours is not None:
+            values["expiration_hours"] = expiration_hours
+        if clear_api_token:
+            values["api_token"] = ""
         result = await self._session.execute(
             update(Container)
             .where(

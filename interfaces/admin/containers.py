@@ -9,6 +9,7 @@ from fastapi.responses import PlainTextResponse
 
 from application import container as container_service
 from application import image as image_service
+from domain.errors import InvalidArgumentError
 from interfaces.admin.auth import require_admin_access
 from interfaces.admin.schemas import (
     AdminContainerListResponse,
@@ -51,29 +52,34 @@ router = APIRouter(
 )
 async def create_container(request: AdminCreateContainerRequest) -> AdminCreateContainerResponse:
     """创建并启动云端沙箱，包含供管理员使用的完整字段。"""
+    if request.from_ and request.replace:
+        raise InvalidArgumentError("不能同时使用 from 与 replace 字段")
+
     full_name = (
         image_service.normalize_full_name(request.image)
         if request.image is not None
         else None
     )
-    created = await container_service.create_container(
-        container_service.CreateContainerParams(
-            user_id=request.user_id,
-            source_service_id=request.from_,
-            skip_git=request.skip_git,
-            explicit_fields=frozenset(request.model_fields_set),
-            image=full_name,
-            container_type=request.type,
-            gitee_url=request.gitee_url,
-            gitee_user=request.gitee_user,
-            gitee_repository=request.gitee_repository,
-            gitee_branch=request.gitee_branch,
-            expiration_hours=request.expiration_hours,
-            authorize_general_account=request.authorize_general_account,
-            cpu=request.cpu,
-            memory=request.memory,
-        )
+    params = container_service.CreateContainerParams(
+        user_id=request.user_id,
+        source_service_id=request.from_,
+        skip_git=request.skip_git,
+        explicit_fields=frozenset(request.model_fields_set),
+        image=full_name,
+        container_type=request.type,
+        gitee_url=request.gitee_url,
+        gitee_user=request.gitee_user,
+        gitee_repository=request.gitee_repository,
+        gitee_branch=request.gitee_branch,
+        expiration_hours=request.expiration_hours,
+        authorize_general_account=request.authorize_general_account,
+        cpu=request.cpu,
+        memory=request.memory,
     )
+    if request.replace:
+        created = await container_service.replace_container(request.replace, params)
+    else:
+        created = await container_service.create_container(params)
     view = _container_response(
         await container_service.get_admin_container(created.service_id)
     )

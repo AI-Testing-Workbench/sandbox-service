@@ -22,7 +22,6 @@ from config import Constants, get_delete_failed_container, settings
 from application import container as _container
 from domain.models import (
     ContainerStatus,
-    add_hours_to_iso,
     get_public_git_fin_status,
     map_runtime_state,
     resolve_container_status,
@@ -104,26 +103,9 @@ async def expire_containers() -> list[str]:
         ]
 
     for container_id in candidate_ids:
-        async with _container.lifecycle_guard():
-            async with session_scope() as session:
-                # 新 Session 避免使用首轮扫描的 expiration_hours/created_at 快照。
-                current = await ContainerRepository(session).get(container_id)
-                if current is None or current.deleted_at is not None:
-                    continue
-                if current.expiration_hours <= 0:
-                    continue
-                try:
-                    expires = add_hours_to_iso(current.created_at, current.expiration_hours)
-                    if expires is None or datetime.fromisoformat(expires) > _now():
-                        continue
-                except (TypeError, ValueError):
-                    logger.exception("业务删除时间字段非法，跳过容器: %s", container_id)
-                    continue
-                service_id = current.service_id
-        # business_delete acquires the same lifecycle lock itself.
         try:
-            await _container.business_delete(service_id)
-            expired.append(container_id)
+            if await _container.business_delete_if_expired(container_id):
+                expired.append(container_id)
         except OpenSandboxError as exc:
             # OpenSandbox 适配层已记录底层原因；这里不再重复打印 traceback。
             logger.error("业务删除处理失败: %s: %s", container_id, exc)
@@ -302,7 +284,6 @@ async def refresh_status_cache() -> None:
     """
     async with session_scope() as session:
         rows = await ContainerRepository(session).list_active()
-    active_ids: set[str] = set()
     updates: dict[str, CachedRuntimeStatus] = {}
     update_versions: dict[str, int] = {}
     failed_count = 0
@@ -379,7 +360,6 @@ async def refresh_status_cache() -> None:
             continue
         if runtime is None:
             continue
-        active_ids.add(row.container_id)
         resolved_status = resolve_container_status(
             current_git_fin_status,
             runtime.status,
@@ -399,36 +379,44 @@ async def refresh_status_cache() -> None:
         updates[row.container_id] = updated_runtime
         update_versions[row.container_id] = cache_version
         failed_count += int(failed)
-    with _status_cache_lock:
-        published_updates: dict[str, CachedRuntimeStatus] = {}
-        for container_id, cached_runtime in updates.items():
-            # A lifecycle action may have completed while this refresh was
-            # reading the remote state. Never publish that stale result over
-            # the pending transition created by the action.
-            if _cache_versions.get(container_id, 0) != update_versions[container_id]:
-                continue
-            transition = _transition_targets.get(container_id)
-            if transition is not None and transition[0] == update_versions[container_id]:
-                target = transition[1]
-                if target is ContainerStatus.STOPPED and cached_runtime.status is ContainerStatus.RUNNING:
+    # A replacement may change container_id after the scan snapshot. Take the
+    # current active ID set under the same lifecycle lock before pruning caches.
+    async with _container.lifecycle_guard():
+        async with session_scope() as session:
+            latest_active_ids = {
+                row.container_id
+                for row in await ContainerRepository(session).list_active()
+            }
+        with _status_cache_lock:
+            published_updates: dict[str, CachedRuntimeStatus] = {}
+            for container_id, cached_runtime in updates.items():
+                # A lifecycle action may have completed while this refresh was
+                # reading the remote state. Never publish that stale result over
+                # the pending transition created by the action.
+                if _cache_versions.get(container_id, 0) != update_versions[container_id]:
                     continue
-                if target is ContainerStatus.RUNNING and cached_runtime.status is ContainerStatus.STOPPED:
-                    continue
-                if cached_runtime.status is target or cached_runtime.status is ContainerStatus.FAILED:
-                    _transition_targets.pop(container_id, None)
-            _status_cache[container_id] = cached_runtime.status
-            _runtime_cache[container_id] = cached_runtime
-            published_updates[container_id] = cached_runtime
-        stale = [
-            cid
-            for cid in set(_status_cache) | set(_runtime_cache)
-            if cid not in active_ids
-        ]
-        for cid in stale:
-            _cache_versions[cid] = _cache_versions.get(cid, 0) + 1
-            _transition_targets.pop(cid, None)
-            _status_cache.pop(cid, None)
-            _runtime_cache.pop(cid, None)
+                transition = _transition_targets.get(container_id)
+                if transition is not None and transition[0] == update_versions[container_id]:
+                    target = transition[1]
+                    if target is ContainerStatus.STOPPED and cached_runtime.status is ContainerStatus.RUNNING:
+                        continue
+                    if target is ContainerStatus.RUNNING and cached_runtime.status is ContainerStatus.STOPPED:
+                        continue
+                    if cached_runtime.status is target or cached_runtime.status is ContainerStatus.FAILED:
+                        _transition_targets.pop(container_id, None)
+                _status_cache[container_id] = cached_runtime.status
+                _runtime_cache[container_id] = cached_runtime
+                published_updates[container_id] = cached_runtime
+            stale = [
+                cid
+                for cid in set(_status_cache) | set(_runtime_cache)
+                if cid not in latest_active_ids
+            ]
+            for cid in stale:
+                _cache_versions[cid] = _cache_versions.get(cid, 0) + 1
+                _transition_targets.pop(cid, None)
+                _status_cache.pop(cid, None)
+                _runtime_cache.pop(cid, None)
     if rows or stale:
         logger.info(
             "状态刷新: 更新 %d 个容器状态，更新失败 %d 个，清理 %d 个失效项",

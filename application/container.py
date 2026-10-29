@@ -105,6 +105,7 @@ __all__ = [
     "get_status",
     "get_container_logs",
     "create_container",
+    "replace_container",
     "get_opensandbox_client",
     "get_filebrowser_client",
     "lifecycle_guard",
@@ -114,6 +115,7 @@ __all__ = [
     "stop",
     "restart",
     "business_delete",
+    "business_delete_if_expired",
     "business_delete_failed_container",
     "restore",
     "permanent_delete",
@@ -312,6 +314,18 @@ class CreatedContainer:
     created_at: str
     status: ContainerStatus
     service_id: str
+
+
+@dataclass(frozen=True)
+class _ContainerReplacementPlan:
+    previous_container_id: str
+    container_type: str
+    image: str
+    expiration_hours: int
+    expiration_hours_update: Optional[int]
+    created_at: str
+    authorize_general_account: bool
+    resource_limits: dict[str, str]
 
 
 @dataclass(frozen=True)
@@ -698,6 +712,159 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
         )
 
 
+async def replace_container(
+    service_id: str,
+    params: CreateContainerParams,
+) -> CreatedContainer:
+    """替换已完成 Git 初始化的服务后端，同时保持服务身份与数据卷。"""
+    if params.source_service_id:
+        raise InvalidArgumentError("不能同时使用 from 与 replace 字段")
+
+    async with lifecycle_guard():
+        plan = await _prepare_container_replacement(service_id, params)
+        client = get_opensandbox_client()
+        await _persist_stop_intent(service_id, plan.previous_container_id)
+
+        from scheduler.lifecycle import (
+            mark_container_start_requested,
+            mark_container_stop_requested,
+            mark_container_stopped,
+        )
+
+        mark_container_stop_requested(plan.previous_container_id)
+        try:
+            await client.delete(plan.previous_container_id)
+        except SandboxNotFoundError:
+            pass
+        except Exception as exc:  # noqa: BLE001
+            mark_container_stopped(plan.previous_container_id)
+            _raise_backend_service_error("替换容器", exc)
+
+        try:
+            new_container_id = await _rebuild_backend(
+                service_id,
+                replacement=plan,
+            )
+        except Exception:
+            mark_container_stopped(plan.previous_container_id)
+            raise
+
+        mark_container_start_requested(new_container_id)
+        return CreatedContainer(
+            container_id=new_container_id,
+            image=plan.image,
+            container_type=ContainerType(plan.container_type),
+            expiration_hours=(
+                plan.expiration_hours_update
+                if plan.expiration_hours_update is not None
+                else plan.expiration_hours
+            ),
+            authorize_general_account=plan.authorize_general_account,
+            created_at=plan.created_at,
+            status=ContainerStatus.RUNNING,
+            service_id=service_id,
+        )
+
+
+async def _prepare_container_replacement(
+    service_id: str,
+    params: CreateContainerParams,
+) -> _ContainerReplacementPlan:
+    """在写入 Stop 意图前解析并校验全部替换参数。"""
+    if not params.user_id or not params.user_id.strip():
+        raise InvalidArgumentError("user_id 不能为空")
+    _validate_resource_overrides(params)
+
+    async with session_scope() as session:
+        row = await ContainerRepository(session).get_by_service_id(service_id)
+        if row is None:
+            raise ContainerNotFoundError("云端沙箱不存在")
+        if row.deleted_at is not None:
+            raise BusinessConflictError("不能替换业务删除的云端沙箱")
+        if row.git_fin_status != "initialized":
+            raise BusinessConflictError("不能替换码云初始化未成功的云端沙箱")
+        if row.user_id != params.user_id:
+            raise BusinessConflictError("请求用户与目标云端沙箱用户不一致")
+
+        try:
+            container_type = ContainerType(row.container_type)
+        except ValueError:
+            raise BusinessConflictError("目标云端沙箱类型无效") from None
+
+        explicit = params.explicit_fields
+        if "type" in explicit and params.container_type is not container_type:
+            raise BusinessConflictError("请求的云端沙箱类型与目标不一致")
+
+        fixed_string_fields = (
+            ("gitee_user", params.gitee_user, row.gitee_user),
+            ("gitee_repository", params.gitee_repository, row.gitee_repository),
+            ("gitee_url", params.gitee_url, row.gitee_url),
+            ("gitee_branch", params.gitee_branch, row.gitee_branch),
+        )
+        for field_name, requested, persisted in fixed_string_fields:
+            if field_name not in explicit:
+                continue
+            requested_value = _normalise_optional_gitee_value(requested)
+            persisted_value = _normalise_optional_gitee_value(persisted)
+            if requested_value != persisted_value:
+                raise BusinessConflictError("请求的码云配置与目标云端沙箱不一致")
+
+        authorize_general_account = bool(row.authorize_general_account)
+        if (
+            "authorize_general_account" in explicit
+            and params.authorize_general_account is not authorize_general_account
+        ):
+            raise BusinessConflictError("请求的码云配置与目标云端沙箱不一致")
+
+        previous_container_id = row.container_id
+        user_id = row.user_id
+        container_type_value = row.container_type
+        gitee_user = row.gitee_user
+        gitee_repository = row.gitee_repository
+        gitee_branch = row.gitee_branch
+        gitee_url = row.gitee_url
+        expiration_hours = row.expiration_hours
+        created_at = row.created_at
+
+    expiration_hours_update = (
+        params.expiration_hours
+        if "expiration_hours" in params.explicit_fields
+        and params.expiration_hours is not None
+        else None
+    )
+    if expiration_hours_update is not None:
+        _validate_expiration_hours(expiration_hours_update)
+    resolved_expiration_hours = (
+        expiration_hours_update
+        if expiration_hours_update is not None
+        else expiration_hours
+    )
+    resolved_params = replace(
+        params,
+        user_id=user_id,
+        source_service_id="",
+        container_type=container_type,
+        gitee_user=gitee_user,
+        gitee_repository=gitee_repository,
+        gitee_branch=gitee_branch,
+        gitee_url=gitee_url,
+        authorize_general_account=authorize_general_account,
+        expiration_hours=resolved_expiration_hours,
+    )
+    image = await _resolve_image(resolved_params)
+    resource_limits = await _resource_limits(resolved_params)
+    return _ContainerReplacementPlan(
+        previous_container_id=previous_container_id,
+        container_type=container_type_value,
+        image=image,
+        expiration_hours=expiration_hours,
+        expiration_hours_update=expiration_hours_update,
+        created_at=created_at,
+        authorize_general_account=authorize_general_account,
+        resource_limits=resource_limits,
+    )
+
+
 def _sandbox_create_kwargs(
     *,
     name: str,
@@ -863,6 +1030,11 @@ def _validate_required(
         raise InvalidArgumentError(
             "gitee_url、gitee_user、gitee_repository 必须同时填写或同时为空"
         )
+    _validate_resource_overrides(params)
+
+
+def _validate_resource_overrides(params: CreateContainerParams) -> None:
+    """校验 Create/Replace 共用的 CPU 与内存覆盖值。"""
     if params.cpu is not None and (
         isinstance(params.cpu, bool)
         or not isinstance(params.cpu, (int, float))
@@ -1159,6 +1331,26 @@ async def business_delete(service_id: str) -> None:
         await _business_delete_locked(service_id)
 
 
+async def business_delete_if_expired(container_id: str) -> bool:
+    """在生命周期锁内重检到期时间，并删除仍有效的候选服务。"""
+    async with lifecycle_guard():
+        async with session_scope() as session:
+            current = await ContainerRepository(session).get(container_id)
+            if current is None or current.deleted_at is not None:
+                return False
+            if current.expiration_hours <= 0:
+                return False
+            try:
+                expires = add_hours_to_iso(current.created_at, current.expiration_hours)
+                if expires is None or datetime.fromisoformat(expires) > _now():
+                    return False
+            except (TypeError, ValueError):
+                logger.exception("业务删除时间字段非法，跳过容器: %s", container_id)
+                return False
+            service_id = current.service_id
+        return await _business_delete_locked(service_id)
+
+
 async def business_delete_failed_container(
     service_id: str,
     expected_created_at: str,
@@ -1317,29 +1509,43 @@ async def _rebuild_backend(
     service_id: str,
     *,
     restore_data: Optional[tuple[str, int]] = None,
+    replacement: Optional[_ContainerReplacementPlan] = None,
 ) -> str:
     """Create a backend for an existing service without cloning or reinitializing Git."""
+    if restore_data is not None and replacement is not None:
+        raise ValueError("Restore 与 Replace 不能共用后端重建")
     async with _create_lock:
         async with session_scope() as session:
             row = await _require_service_record(
                 ContainerRepository(session),
                 service_id,
                 include_deleted=restore_data is not None,
+                enforce_user_policy=replacement is None,
             )
             if restore_data is None and row.deleted_at is not None:
                 raise ContainerNotFoundError("云端沙箱不存在")
             previous_container_id = row.container_id
             user_id = row.user_id
             container_type = row.container_type
-            service_image = row.image
+            service_image = replacement.image if replacement is not None else row.image
             git_user = row.gitee_user
             git_repository = row.gitee_repository
             git_branch = row.gitee_branch or ""
             git_url = row.gitee_url
             authorize_general_account = bool(row.authorize_general_account)
+            if replacement is not None and (
+                row.container_id != replacement.previous_container_id
+                or row.deleted_at is not None
+                or row.git_fin_status != "initialized"
+            ):
+                raise BusinessConflictError("替换目标在操作期间已变化")
 
         name = uuid.uuid4().hex[:12]
-        cpu, memory = await _cfg_resource_limits()
+        if replacement is None:
+            cpu, memory = await _cfg_resource_limits()
+            resource_limits = {"cpu": format(cpu, "g"), "memory": f"{memory}Gi"}
+        else:
+            resource_limits = replacement.resource_limits
         volumes: Optional[list[SandboxVolume]] = None
         if settings.filebrowser_enabled:
             plan = build_volume_path_plan(user_id, service_id)
@@ -1354,7 +1560,7 @@ async def _rebuild_backend(
             gitee_branch=git_branch,
             gitee_url=git_url,
             authorize_general_account=authorize_general_account,
-            resource_limits={"cpu": format(cpu, "g"), "memory": f"{memory}Gi"},
+            resource_limits=resource_limits,
             volumes=volumes,
         )
 
@@ -1370,11 +1576,12 @@ async def _rebuild_backend(
         session_rebound = False
         try:
             await _wait_for_container_running(client, new_container_id)
-            session_rebound = store.replace_container_id(
-                service_id,
-                previous_container_id,
-                new_container_id,
-            )
+            if replacement is None:
+                session_rebound = store.replace_container_id(
+                    service_id,
+                    previous_container_id,
+                    new_container_id,
+                )
             async with session_scope() as session:
                 repo = ContainerRepository(session)
                 if not await repo.replace_container_id(
@@ -1382,6 +1589,13 @@ async def _rebuild_backend(
                     previous_container_id,
                     new_container_id,
                     restore=restore_data,
+                    image=replacement.image if replacement is not None else None,
+                    expiration_hours=(
+                        replacement.expiration_hours_update
+                        if replacement is not None
+                        else None
+                    ),
+                    clear_api_token=replacement is not None,
                 ):
                     raise ContainerNotFoundError("云端沙箱记录已变化，无法更新后端 ID")
         except Exception as exc:  # noqa: BLE001
