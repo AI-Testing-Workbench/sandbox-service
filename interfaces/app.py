@@ -67,7 +67,7 @@ def create_app() -> FastAPI:
 
     app = FastAPI(
         title="TestAgent Cloud 云端沙箱",
-        version="1.2.1",
+        version="1.2.2",
         lifespan=lifespan,
     )
     app.include_router(user_container_router)
