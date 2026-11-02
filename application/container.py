@@ -464,6 +464,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
     - 容器名：随机字符串（仅表示容器本身，不承载业务信息）；SSH 端口固定 2222；
       环境变量注入 `TESTAGENT_CLOUD_SERVICE_USER` /
       `TESTAGENT_CLOUD_SERVICE_ID` / `TESTAGENT_CLOUD_SERVICE_URL` /
+      `TESTAGENT_CLOUD_TYPE` /
       `TESTAGENT_CLOUD_GITEE_USER` / `TESTAGENT_CLOUD_GITEE_REPOSITORY` /
       `TESTAGENT_CLOUD_GITEE_BRANCH`（为空也注入空值）
       及 `TESTAGENT_CLOUD_AUTHORIZE_GENERAL_ACCOUNT`（true/false），并注入
@@ -882,6 +883,7 @@ def _sandbox_create_kwargs(
     """Build common OpenSandbox metadata, environment, resources, and volumes."""
     env = {
         "TESTAGENT_CLOUD_MODE": "1",
+        "TESTAGENT_CLOUD_TYPE": container_type,
         "TESTAGENT_CLOUD_SERVICE_USER": user_id,
         "TESTAGENT_CLOUD_SERVICE_ID": service_id,
         "TESTAGENT_CLOUD_SERVICE_URL": settings.service_url,
