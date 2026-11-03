@@ -278,7 +278,7 @@ async def refresh_status_cache() -> None:
 
     状态映射（v4 §8.3）：Running → `running`；Paused/Terminated 及兼容退出态 →
     `stopped`；Failed → `failed`；Pending/Pausing/Resuming/Stopping 等过渡态 →
-    `pending`；不可达 → `unknown`；sandbox 已消失 → 删除对应数据库记录；非运行态不请求指标，
+    `pending`；不可达 → `unknown`；活跃 sandbox 意外消失时标记为业务删除；非运行态不请求指标，
     运行态指标不可用时仅将指标置空。
     单个容器刷新失败不会中断本轮，最终日志会单独统计状态/端点失败数量。
     """
@@ -351,11 +351,10 @@ async def refresh_status_cache() -> None:
         if missing:
             # noinspection broad-exception
             try:
-                await _container.delete_missing_container_record(row.container_id)
+                await _container.mark_missing_container_business_deleted(row.container_id)
             except Exception:  # noqa: BLE001
-                logger.exception("远端容器不存在，删除数据库记录失败: %s", row.container_id)
-            # Unexpected remote disappearance still removes active records; a
-            # persisted Stop intent was handled above and remains recoverable.
+                logger.exception("远端容器不存在，标记业务删除失败: %s", row.container_id)
+            # Keep the record and volume for the normal retention lifecycle.
             _discard_cached_status(row.container_id)
             continue
         if runtime is None:

@@ -110,7 +110,7 @@ __all__ = [
     "get_filebrowser_client",
     "lifecycle_guard",
     "cleanup_volume_for_container",
-    "delete_missing_container_record",
+    "mark_missing_container_business_deleted",
     "start",
     "stop",
     "restart",
@@ -206,21 +206,27 @@ async def lifecycle_guard() -> AsyncIterator[None]:
         yield
 
 
-async def delete_missing_container_record(container_id: str) -> None:
-    """删除已确认不存在的远端容器对应的本地活跃记录。"""
+async def mark_missing_container_business_deleted(container_id: str) -> bool:
+    """将意外缺失的活跃远端容器标记为业务删除并保留记录和卷。"""
     service_id: Optional[str] = None
     async with lifecycle_guard():
         async with session_scope() as session:
             repo = ContainerRepository(session)
             row = await repo.get(container_id)
             if row is None or row.deleted_at is not None or row.stop_at is not None:
-                return
+                return False
             service_id = row.service_id
-            await cleanup_volume_for_container(row.user_id, row.service_id)
-            await repo.delete(container_id)
-    if service_id is not None:
-        get_git_session_store().discard_session(service_id)
-    logger.info("远端容器不存在，已删除数据库记录: %s", container_id)
+            await repo.business_delete(container_id, _now_iso())
+            # The missing backend already satisfies the persisted delete intent.
+            await repo.clear_stop_intent(container_id)
+    if service_id is None:
+        return False
+    get_git_session_store().suspend_session(service_id)
+    from scheduler.lifecycle import discard_container_status
+
+    discard_container_status(container_id)
+    logger.info("远端容器意外缺失，已标记为业务删除: %s", container_id)
+    return True
 
 
 async def cleanup_volume_for_container(user_id: str, service_id: str) -> None:
@@ -1137,7 +1143,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
     try:
         status: SandboxStatus = await get_opensandbox_client().get_status(container_id)
     except SandboxNotFoundError as exc:
-        await delete_missing_container_record(container_id)
+        await mark_missing_container_business_deleted(container_id)
         current = await _get_service_record_snapshot(row.service_id)
         if current is not None and current.stop_at is not None:
             return _stopped_status_view(current)
@@ -1155,7 +1161,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         )
         endpoint = ep.endpoint
     except SandboxNotFoundError as exc:
-        await delete_missing_container_record(container_id)
+        await mark_missing_container_business_deleted(container_id)
         current = await _get_service_record_snapshot(row.service_id)
         if current is not None and current.stop_at is not None:
             return _stopped_status_view(current)
@@ -1476,7 +1482,7 @@ async def _get_metrics(
         # noinspection calling-non-callable
         metrics = await get_metrics(container_id)
     except SandboxNotFoundError as exc:
-        await delete_missing_container_record(container_id)
+        await mark_missing_container_business_deleted(container_id)
         current = await _get_service_record_snapshot(service_id)
         if current is not None and current.stop_at is not None:
             return None, None
