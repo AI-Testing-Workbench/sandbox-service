@@ -124,7 +124,6 @@ __all__ = [
     "query_container_ids",
     "list_orphan_container_ids",
     "delete_orphan_containers",
-    "cleanup_orphan_containers",
     "delete_sandboxes_by_pod_names",
     "list_admin_containers",
     "get_admin_container",
@@ -1805,33 +1804,6 @@ async def delete_orphan_containers(container_ids: list[str]) -> None:
         raise ExternalDependencyError(
             f"以下孤儿容器删除失败: {', '.join(failed_ids)}"
         )
-
-
-async def cleanup_orphan_containers() -> list[str]:
-    """Delete all remote service containers with no DB row under the create lock."""
-    deleted: list[str] = []
-    async with _create_lock:
-        orphan_ids = await _list_orphan_container_ids_locked()
-        if not orphan_ids:
-            return deleted
-        client = get_opensandbox_client()
-        for container_id in orphan_ids:
-            try:
-                await client.delete(container_id)
-            except SandboxNotFoundError:
-                deleted.append(container_id)
-            except Exception as exc:  # noqa: BLE001
-                logger.error(
-                    "Scheduler 删除孤儿容器失败: %s: %s: %s",
-                    container_id,
-                    type(exc).__name__,
-                    exc,
-                )
-            else:
-                deleted.append(container_id)
-    if deleted:
-        logger.info("Scheduler 孤儿清理: 删除 %d 个远端容器", len(deleted))
-    return deleted
 
 
 async def delete_sandboxes_by_pod_names(pod_names: list[str]) -> None:

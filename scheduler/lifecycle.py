@@ -6,6 +6,7 @@
   `refresh_status_cache`），可由管理 API 读取缓存；循环仅负责按周期编排。
 - 调度扫描按业务状态排除已完成记录，重复扫描无副作用（v4 §13.2）。
 - 运行状态写入进程内内存缓存（不写 SQLite），供管理 API 展示（v4 §13.2/§8.3）。
+- 孤儿容器由管理员显式查询和删除，Scheduler 不扫描或自动删除。
 """
 
 from __future__ import annotations
@@ -46,7 +47,6 @@ __all__ = [
     "mark_container_stopped",
     "mark_container_start_requested",
     "discard_container_status",
-    "cleanup_orphan_containers",
     "get_cached_status",
     "get_cached_runtime",
     "all_cached_statuses",
@@ -602,25 +602,28 @@ def _mark_container_transition_requested(
 # T7.5 补偿
 # ---------------------------------------------------------------------------
 async def compensate() -> list[str]:
-    """进程启动后补齐生命周期并删除没有数据库记录的孤儿容器。
+    """进程启动后补齐生命周期状态，不执行孤儿容器清理。
 
     幂等：扫描范围排除已完成动作，不重复触发业务删除/物理删除。
     """
-    done = await run_cycle()
+    done = await _run_cycle()
     if done:
         logger.info("补偿完成：处理 %d 项", len(done))
     return done
 
 
 async def run_cycle() -> list[str]:
-    """Run one periodic lifecycle/status/orphan reconciliation cycle."""
+    """Run one periodic lifecycle and status reconciliation cycle."""
+    return await _run_cycle()
+
+
+async def _run_cycle() -> list[str]:
     done: list[str] = []
     steps: tuple[Callable[[], Awaitable[object]], ...] = (
         expire_containers,
         delete_failed_containers,
         purge_containers,
         refresh_status_cache,
-        cleanup_orphan_containers,
     )
     for step in steps:
         # noinspection broad-exception
@@ -634,16 +637,11 @@ async def run_cycle() -> list[str]:
     return done
 
 
-async def cleanup_orphan_containers() -> list[str]:
-    """Run the create-lock-protected remote orphan reconciliation."""
-    return await _container.cleanup_orphan_containers()
-
-
 # ---------------------------------------------------------------------------
 # T7.1 定时循环
 # ---------------------------------------------------------------------------
 async def run_loop() -> None:
-    """单实例后台循环：启动补偿并周期执行生命周期、状态和孤儿清理。
+    """单实例后台循环：启动补偿并周期执行生命周期和状态刷新。
 
     周期：`TA_SS_SCHEDULER_POLL_INTERVAL_SECONDS`（v4 §13.1）。
     """
