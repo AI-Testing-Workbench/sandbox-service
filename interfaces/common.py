@@ -18,6 +18,7 @@ __all__ = [
     "ExpirationRequest",
     "ExpirationResponse",
     "api_responses",
+    "admin_router_responses",
 ]
 
 
@@ -86,14 +87,15 @@ class ContainerRuntimeResponse(BaseModel):
     )
 
 
+_EXPIRATION_REQUEST_SCHEMA_EXTRA: dict[str, Any] = {
+    "examples": [{"expiration_hours": settings.container_default_expiration_hours}]
+}
+
+
 class ExpirationRequest(BaseModel):
     """设置云端沙箱创建后的剩余过期时间请求"""
 
-    model_config = ConfigDict(
-        json_schema_extra={
-            "examples": [{"expiration_hours": settings.container_default_expiration_hours}]
-        }
-    )
+    model_config = ConfigDict(json_schema_extra=_EXPIRATION_REQUEST_SCHEMA_EXTRA)
 
     expiration_hours: int = Field(
         ge=0,
@@ -137,3 +139,11 @@ def api_responses(
             "description": _ERROR_LABELS.get(code, "请求失败"),
         }
     return result
+
+
+def admin_router_responses() -> dict[int | str, dict[str, Any]]:
+    """提供管理员路由共享的认证错误响应文档。"""
+    return {
+        401: {"model": ErrorResponse, "description": "未认证"},
+        403: {"model": ErrorResponse, "description": "用户被禁止"},
+    }

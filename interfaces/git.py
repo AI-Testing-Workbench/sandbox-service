@@ -7,7 +7,7 @@ Git 初始化与凭证 API 合同（C53.8）。
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, cast
+from typing import Any, Annotated, Literal, cast
 
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, ConfigDict, Field
@@ -80,10 +80,21 @@ class GitCredentialConflictResponse(BaseModel):
 
 OperatorUserId = Annotated[str | None, Depends(get_operator_user_id)]
 
+_GIT_ROUTER_RESPONSES: dict[int | str, dict[str, Any]] = {
+    403: {"model": ErrorResponse, "description": "用户被禁止"}
+}
+_GIT_CREDENTIAL_RESPONSES: dict[int | str, dict[str, Any]] = {
+    **api_responses("成功", 200, 401, 404, 409),
+    409: {
+        "model": GitCredentialConflictResponse,
+        "description": "凭证等待或 Git 初始化失败",
+    },
+}
+
 router = APIRouter(
     prefix="/git",
     tags=["码云凭证 API"],
-    responses={403: {"model": ErrorResponse, "description": "用户被禁止"}},
+    responses=_GIT_ROUTER_RESPONSES,
 )
 
 
@@ -123,13 +134,7 @@ async def report_git_state(
 @router.get(
     "/{service_id}/credential",
     response_model=GitCredentialResponse,
-    responses={
-        **api_responses("成功", 200, 401, 404, 409),
-        409: {
-            "model": GitCredentialConflictResponse,
-            "description": "凭证等待或 Git 初始化失败",
-        },
-    },
+    responses=_GIT_CREDENTIAL_RESPONSES,
 )
 async def get_git_credential(
     service_id: str,

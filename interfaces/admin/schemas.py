@@ -4,7 +4,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool
 
@@ -113,31 +113,34 @@ class UserMutationResponse(BaseModel):
     user_id: str = Field(description="用户 ID")
 
 
+_ADMIN_CREATE_SCHEMA_EXTRA: dict[str, Any] = {
+    "examples": [
+        {
+            "user_id": "10001",
+            "image": "localhost:5000/testagent/app:v1",
+            "from": "",
+            "replace": "",
+            "skip_git": False,
+            "gitee_user": "test_name",
+            "gitee_repository": "test_project",
+            "gitee_branch": "develop",
+            "gitee_url": "https://github.com",
+            "expiration_hours": settings.container_default_expiration_hours,
+            "authorize_general_account": False,
+            "type": "testagent_cloud",
+            "cpu": 1,
+            "memory": 1,
+        }
+    ]
+}
+
+
 class AdminCreateContainerRequest(ContainerCreateRequestBase):
     """管理员创建云端沙箱请求"""
 
     model_config = ConfigDict(
         extra="forbid",
-        json_schema_extra={
-            "examples": [
-                {
-                    "user_id": "10001",
-                    "image": "localhost:5000/testagent/app:v1",
-                    "from": "",
-                    "replace": "",
-                    "skip_git": False,
-                    "gitee_user": "test_name",
-                    "gitee_repository": "test_project",
-                    "gitee_branch": "develop",
-                    "gitee_url": "https://github.com",
-                    "expiration_hours": settings.container_default_expiration_hours,
-                    "authorize_general_account": False,
-                    "type": "testagent_cloud",
-                    "cpu": 1,
-                    "memory": 1,
-                }
-            ]
-        }
+        json_schema_extra=_ADMIN_CREATE_SCHEMA_EXTRA,
     )
 
     image: Optional[str] = Field(
@@ -232,16 +235,19 @@ class OrphanContainerDeleteRequest(BaseModel):
     )
 
 
+_POD_DELETE_SCHEMA_EXTRA: dict[str, Any] = {
+    "examples": [
+        {"pod_names": ["3f2a9c1b-5d4e-4a6f-8b1c-2e7d9a0f4b3c-abcde"]}
+    ]
+}
+
+
 class PodDeleteRequest(BaseModel):
     """按 K8s Pod 名称物理删除云端沙箱请求"""
 
     model_config = ConfigDict(
         extra="forbid",
-        json_schema_extra={
-            "examples": [
-                {"pod_names": ["3f2a9c1b-5d4e-4a6f-8b1c-2e7d9a0f4b3c-abcde"]}
-            ]
-        },
+        json_schema_extra=_POD_DELETE_SCHEMA_EXTRA,
     )
 
     pod_names: list[str] = Field(

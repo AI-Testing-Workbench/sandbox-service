@@ -7,7 +7,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -31,24 +31,27 @@ __all__ = [
 ]
 
 
+_USER_CREATE_SCHEMA_EXTRA: dict[str, Any] = {
+    "examples": [
+        {
+            "user_id": "10001",
+            "from": "",
+            "skip_git": False,
+            "gitee_user": "test_name",
+            "gitee_repository": "test_project",
+            "gitee_branch": "develop",
+            "gitee_url": "https://github.com",
+            "authorize_general_account": True,
+            "type": "testagent_cloud",
+        }
+    ]
+}
+
+
 class CreateContainerRequest(ContainerCreateRequestBase):
     model_config = ConfigDict(
         extra="forbid",
-        json_schema_extra={
-            "examples": [
-                {
-                    "user_id": "10001",
-                    "from": "",
-                    "skip_git": False,
-                    "gitee_user": "test_name",
-                    "gitee_repository": "test_project",
-                    "gitee_branch": "develop",
-                    "gitee_url": "https://github.com",
-                    "authorize_general_account": True,
-                    "type": "testagent_cloud",
-                }
-            ]
-        }
+        json_schema_extra=_USER_CREATE_SCHEMA_EXTRA,
     )
 
 

@@ -41,6 +41,7 @@ __all__ = [
     "normalize_full_name",
     "list_images",
     "check_image_push_states",
+    "check_image_pushed",
     "upload_image",
     "push_image",
     "set_default_image",
@@ -286,6 +287,22 @@ async def check_image_push_states() -> list[ImageRow]:
     return await _collect_image_rows(check_pushed=True)
 
 
+async def check_image_pushed(full_ref: str) -> bool:
+    """Check one complete Registry reference without scanning local images."""
+    canonical = normalize_full_name(full_ref)
+    registry, namespace, name, tag = _parse_ref(canonical)
+    try:
+        return await asyncio.to_thread(
+            _registry().check_image_pushed,
+            registry,
+            namespace,
+            name,
+            tag,
+        )
+    except Exception as exc:
+        raise ExternalDependencyError("检查镜像推送状态失败 (Registry 服务异常)") from exc
+
+
 async def _collect_image_rows(check_pushed: bool) -> list[ImageRow]:
     try:
         local_images = await asyncio.to_thread(_list_local_images)
@@ -508,15 +525,8 @@ async def set_default_image(
 ) -> str:
     """设置指定容器类型的默认镜像（完整引用）；仅已推送镜像可设为默认（v4 §10.5）。"""
     canonical = normalize_full_name(full_ref)
-    registry, namespace, name, tag = _parse_ref(canonical)
     try:
-        pushed = await asyncio.to_thread(
-            _registry().check_image_pushed,
-            registry,
-            namespace,
-            name,
-            tag,
-        )
+        pushed = await check_image_pushed(canonical)
     except Exception as exc:
         raise ExternalDependencyError("校验默认镜像已推送状态失败 (Registry 服务异常)") from exc
     if not pushed:

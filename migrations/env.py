@@ -7,7 +7,7 @@ Alembic 运行环境配置。
 
 from __future__ import annotations
 
-from typing import Literal, cast
+from typing import Literal
 
 # noinspection package-requirements
 from alembic import context
@@ -62,7 +62,7 @@ def run_migrations_offline() -> None:
 def run_migrations_online() -> None:
     supplied_connection = config.attributes.get("connection")
     if supplied_connection is not None:
-        _run_migrations(cast(Connection, supplied_connection))
+        _run_migrations(supplied_connection)
         return
 
     connectable = engine_from_config(

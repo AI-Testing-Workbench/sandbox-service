@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, Depends, Response
 from fastapi.responses import PlainTextResponse
 
@@ -25,21 +27,21 @@ from interfaces.admin.schemas import (
     PodDeleteRequest,
 )
 from interfaces.common_container_routes import register_container_action_routes
-from interfaces.common import ErrorResponse, api_responses
+from interfaces.common import admin_router_responses, api_responses
 
 __all__ = [
     "router",
 ]
 
+_EXPIRATION_OPENAPI_EXTRA: dict[str, Any] = {
+    "requestBody": {"description": "云端沙箱创建后的剩余过期时间 (小时)。"}
+}
 
 router = APIRouter(
     prefix="/admin/containers",
     tags=["管理员 API (云端沙箱操作)"],
     dependencies=[Depends(require_admin_access)],
-    responses={
-        401: {"model": ErrorResponse, "description": "未认证"},
-        403: {"model": ErrorResponse, "description": "用户被禁止"},
-    },
+    responses=admin_router_responses(),
 )
 
 
@@ -215,7 +217,7 @@ async def permanent_delete(service_id: str) -> Response:
     "/{service_id}/expiration",
     response_model=ExpirationResponse,
     status_code=200,
-    openapi_extra={"requestBody": {"description": "云端沙箱创建后的剩余过期时间 (小时)。"}},
+    openapi_extra=_EXPIRATION_OPENAPI_EXTRA,
     responses=api_responses("成功", 200, 400, 404, 502),
 )
 async def set_expiration(service_id: str, request: ExpirationRequest) -> ExpirationResponse:

@@ -18,11 +18,21 @@ import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, AsyncIterator, NoReturn, Optional, cast
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncIterator,
+    Awaitable,
+    Callable,
+    NoReturn,
+    Optional,
+    cast,
+)
 from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from application.blacklist import ensure_user_not_blacklisted
+from application import image as image_service
 from application.container_source import resolve_container_source
 from application.git_api import report_git_status
 from application.volume_copy import (
@@ -513,6 +523,14 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
         else settings.container_default_expiration_hours
     _validate_expiration_hours(expiration_hours)
     image = await _resolve_image(params)
+    if not await image_service.check_image_pushed(image):
+        if not params.image:
+            raise DefaultImageNotConfiguredError(
+                "默认镜像未推送"
+            )
+        raise InvalidArgumentError(
+            "镜像尚未推送"
+        )
     async with _create_lock:
         async with session_scope() as session:
             repo = ContainerRepository(session)
@@ -858,6 +876,8 @@ async def _prepare_container_replacement(
         expiration_hours=resolved_expiration_hours,
     )
     image = await _resolve_image(resolved_params)
+    if not await image_service.check_image_pushed(image):
+        raise ExternalDependencyError("目标镜像尚未推送")
     resource_limits = await _resource_limits(resolved_params)
     return _ContainerReplacementPlan(
         previous_container_id=previous_container_id,
@@ -1473,9 +1493,13 @@ async def _get_metrics(
     service_id: str,
 ) -> tuple[Optional[float], Optional[float]]:
     """读取容器资源使用率；指标不可用时返回空值且不影响状态查询。"""
-    get_metrics = getattr(get_opensandbox_client(), "get_metrics", None)
-    if not callable(get_metrics):
+    get_metrics_method = getattr(get_opensandbox_client(), "get_metrics", None)
+    if not callable(get_metrics_method):
         return None, None
+    get_metrics = cast(
+        Callable[[str], Awaitable[Optional[SandboxMetrics]]],
+        get_metrics_method,
+    )
     # noinspection broad-exception
     try:
         # noinspection calling-non-callable
@@ -1546,6 +1570,9 @@ async def _rebuild_backend(
                 or row.git_fin_status != "initialized"
             ):
                 raise BusinessConflictError("替换目标在操作期间已变化")
+
+        if replacement is None and not await image_service.check_image_pushed(service_image):
+            raise ExternalDependencyError("目标镜像尚未推送")
 
         name = uuid.uuid4().hex[:12]
         if replacement is None:
@@ -2252,7 +2279,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         expires_at=expires_at,
         cpu_usage=cpu_usage,
         memory_usage=memory_usage,
-        deleted_at=cast(Optional[str], row.deleted_at),
+        deleted_at=row.deleted_at,
         business_deleted=row.deleted_at is not None,
     )
 

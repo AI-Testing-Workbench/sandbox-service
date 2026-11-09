@@ -26,7 +26,7 @@ from interfaces.admin.schemas import (
     ImageReferenceRequest,
     SetDefaultImageRequest,
 )
-from interfaces.common import ErrorResponse, api_responses
+from interfaces.common import admin_router_responses, api_responses
 
 __all__ = [
     "router",
@@ -37,10 +37,7 @@ router = APIRouter(
     prefix="/admin/images",
     tags=["管理员 API (镜像操作)"],
     dependencies=[Depends(require_admin_access)],
-    responses={
-        401: {"model": ErrorResponse, "description": "未认证"},
-        403: {"model": ErrorResponse, "description": "用户被禁止"},
-    },
+    responses=admin_router_responses(),
 )
 
 
@@ -108,6 +105,7 @@ async def list_images() -> ImageListResponse:
 @router.post(
     "/check",
     response_model=ImageListResponse,
+    deprecated=True,
     responses=api_responses("成功", 200, 502),
 )
 async def check_image_push_states() -> ImageListResponse:

@@ -10,7 +10,7 @@ from application import admin_users, whitelist
 from domain.errors import BusinessConflictError
 from interfaces.admin.schemas import UserIdRequest, UserIdsResponse, UserMutationResponse
 from interfaces.admin.auth import require_admin_access
-from interfaces.common import ErrorResponse, api_responses
+from interfaces.common import admin_router_responses, api_responses
 
 __all__ = [
     "router",
@@ -21,10 +21,7 @@ router = APIRouter(
     prefix="/admin",
     tags=["管理员 API (用户清单操作)"],
     dependencies=[Depends(require_admin_access)],
-    responses={
-        401: {"model": ErrorResponse, "description": "未认证"},
-        403: {"model": ErrorResponse, "description": "用户被禁止"},
-    },
+    responses=admin_router_responses(),
 )
 
 
