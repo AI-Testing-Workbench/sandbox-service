@@ -398,24 +398,25 @@ settings: Settings = Settings(
 # 应用层与接口层通过本模块访问，不直接操作 settings 表。
 # ---------------------------------------------------------------------------
 
-SETTINGS_KEY_DEFAULT_IMAGE = "default_image"
+SETTINGS_KEY_DEFAULT_IMAGE_TESTAGENT_CLOUD = "default_image_testagent_cloud"
+SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD = "default_image_autotest_cloud"
+SETTINGS_KEY_DEFAULT_IMAGE_EVALUATION_CLOUD = "default_image_evaluation_cloud"
 SETTINGS_KEY_CONTAINER_COUNT_LIMIT = "container_count_limit"
 SETTINGS_KEY_CONTAINER_CPU_LIMIT = "container_cpu_limit"
 SETTINGS_KEY_CONTAINER_MEMORY_LIMIT = "container_memory_limit"
 SETTINGS_KEY_DELETE_FAILED_CONTAINER = "delete_failed_container"
 
-#: autotest_cloud 类型的默认镜像 key（testagent_cloud 沿用历史 key `default_image`）
-SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD = "default_image_autotest_cloud"
-
-_DEFAULT_IMAGE_SETTINGS_KEYS = {
-    ContainerType.TESTAGENT_CLOUD: SETTINGS_KEY_DEFAULT_IMAGE,
-    ContainerType.AUTOTEST_CLOUD: SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD,
+_DEFAULT_IMAGE_SETTINGS_KEYS: dict[str, str] = {
+    ContainerType.TESTAGENT_CLOUD.value: SETTINGS_KEY_DEFAULT_IMAGE_TESTAGENT_CLOUD,
+    ContainerType.TESTAGENT_CLOUD_CHROME.value: SETTINGS_KEY_DEFAULT_IMAGE_TESTAGENT_CLOUD,
+    ContainerType.AUTOTEST_CLOUD.value: SETTINGS_KEY_DEFAULT_IMAGE_AUTOTEST_CLOUD,
+    ContainerType.EVALUATION_CLOUD.value: SETTINGS_KEY_DEFAULT_IMAGE_EVALUATION_CLOUD,
 }
 
 
 def _default_image_settings_key(container_type: ContainerType) -> str:
     """按容器类型返回默认镜像在 settings 表中的 key。"""
-    return _DEFAULT_IMAGE_SETTINGS_KEYS[container_type]
+    return _DEFAULT_IMAGE_SETTINGS_KEYS[container_type.value]
 
 
 @asynccontextmanager
@@ -432,7 +433,7 @@ async def get_default_image(
 ) -> Optional[str]:
     """读取指定容器类型的默认镜像完整引用；未设置返回 None。
 
-    `container_type` 缺省为 `testagent_cloud`，历史 key 行为保持不变。
+    `container_type` 缺省为 `testagent_cloud`，TestAgent Chrome 类型共用同一默认镜像组。
     """
     async with _settings_scope() as repo:
         row = await repo.get(_default_image_settings_key(container_type))

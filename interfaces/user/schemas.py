@@ -11,6 +11,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from domain.models import ContainerType
 from interfaces.common import (
     ContainerCreateRequestBase,
     ContainerRuntimeResponse,
@@ -31,19 +32,20 @@ __all__ = [
 ]
 
 
+_USER_CREATE_EXAMPLE: dict[str, Any] = {
+    "user_id": "10001",
+    "from": "",
+    "skip_git": False,
+    "gitee_user": "test_name",
+    "gitee_repository": "test_project",
+    "gitee_branch": "develop",
+    "gitee_url": "https://github.com",
+    "authorize_general_account": True,
+}
 _USER_CREATE_SCHEMA_EXTRA: dict[str, Any] = {
     "examples": [
-        {
-            "user_id": "10001",
-            "from": "",
-            "skip_git": False,
-            "gitee_user": "test_name",
-            "gitee_repository": "test_project",
-            "gitee_branch": "develop",
-            "gitee_url": "https://github.com",
-            "authorize_general_account": True,
-            "type": "testagent_cloud",
-        }
+        {**_USER_CREATE_EXAMPLE, "type": container_type.value}
+        for container_type in ContainerType
     ]
 }
 
@@ -57,10 +59,13 @@ class CreateContainerRequest(ContainerCreateRequestBase):
 
 class CreateContainerResponse(BaseModel):
     service_id: str = Field(description="云端沙箱 ID")
-    type: str = Field(default="testagent_cloud", description="云端沙箱类型: testagent_cloud / autotest_cloud")
+    type: str = Field(
+        default="testagent_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud"
+    )
     novnc_url: str | None = Field(
         default=None,
-        description="autotest_cloud 云端沙箱的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",
+        description="Chrome/VNC 类型的 noVNC 地址；SSH-only 类型或 endpoint 不可用时为空",
     )
     status: str = Field(description="云端沙箱状态")
     endpoint: str | None = Field(default=None, description="云端沙箱 SSH 访问端点")

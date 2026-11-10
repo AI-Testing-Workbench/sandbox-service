@@ -145,7 +145,7 @@ async def set_default_image(request: SetDefaultImageRequest) -> Response:
 async def unset_default_image(
     container_type: ContainerType = Query(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="云端沙箱类型：testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud",
     ),
 ) -> Response:
     """取消设置指定云端沙箱类型的默认镜像。"""
@@ -161,7 +161,7 @@ async def unset_default_image(
 async def get_default_image(
     container_type: ContainerType = Query(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="云端沙箱类型：testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud",
     ),
 ) -> DefaultImageResponse:
     """获取指定云端沙箱类型的默认镜像。"""

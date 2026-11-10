@@ -44,7 +44,11 @@ class ContainerCreateRequestBase(BaseModel):
     )
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="云端沙箱类型：testagent_cloud TestAgentCloud / autotest_cloud 自动化跑批（启用 Chrome/VNC）",
+        description=(
+            "云端沙箱类型：testagent_cloud、testagent_cloud_chrome、autotest_cloud、"
+            "evaluation_cloud。testagent_cloud_chrome 与 testagent_cloud 共用默认镜像；"
+            "testagent_cloud_chrome 和 autotest_cloud 启用 Chrome/VNC。"
+        ),
     )
     gitee_user: Optional[str] = Field(default=None, description="码云用户名")
     gitee_repository: Optional[str] = Field(default=None, description="码云仓库")
@@ -62,11 +66,14 @@ class ContainerRuntimeResponse(BaseModel):
     service_id: str = Field(description="云端沙箱 ID")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="云端沙箱类型：testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud",
     )
     novnc_url: Optional[str] = Field(
         default=None,
-        description="autotest_cloud 云端沙箱的 noVNC 访问地址（宿主机浏览器打开可实时查看 Chrome）；其他类型为空",
+        description=(
+            "Chrome/VNC 类型（testagent_cloud_chrome、autotest_cloud）的 noVNC 地址；"
+            "SSH-only 类型为空，endpoint 不可用时也为空"
+        ),
     )
     status: str = Field(description="云端沙箱状态")
     git_fin_status: str = Field(

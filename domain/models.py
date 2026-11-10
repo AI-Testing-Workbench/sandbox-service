@@ -48,14 +48,23 @@ class ContainerStatus(str, Enum):
 
 
 class ContainerType(str, Enum):
-    """云端沙箱类型：同一底层镜像的不同启动方式（v4 §11.1）。
+    """云端沙箱运行类型及启动能力。
 
     - `testagent_cloud`：开发/联调云端沙箱（仅 SSH）。
-    - `autotest_cloud`：自动化跑批云端沙箱（额外启用 Chrome/VNC，仍可通过 SSH 连入）。
+    - `testagent_cloud_chrome`：TestAgent Chrome/VNC 类型。
+    - `autotest_cloud`：自动化跑批类型（额外启用 Chrome/VNC）。
+    - `evaluation_cloud`：评估类型（仅 SSH）。
     """
 
     TESTAGENT_CLOUD = "testagent_cloud"
+    TESTAGENT_CLOUD_CHROME = "testagent_cloud_chrome"
     AUTOTEST_CLOUD = "autotest_cloud"
+    EVALUATION_CLOUD = "evaluation_cloud"
+
+    @property
+    def supports_chrome_vnc(self) -> bool:
+        """Whether the container image should start Chrome/VNC services."""
+        return self in (self.TESTAGENT_CLOUD_CHROME, self.AUTOTEST_CLOUD)
 
 
 class GitStatus(str, Enum):

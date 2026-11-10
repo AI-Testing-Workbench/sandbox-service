@@ -167,7 +167,7 @@ def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
     - K8s 网关路由：`host/sandboxes/<id>/6080`（或带签名路径）→ 原路径下追加 `/vnc.html`
 
     host/port 直接从 6080 endpoint 解析（不再经 SSH/22 或 /proxy 转发推导），
-    不带任何查询参数。仅 autotest_cloud 场景使用。
+    不带任何查询参数。仅支持 Chrome/VNC 的容器类型使用。
     """
     if not endpoint:
         return None
@@ -190,12 +190,16 @@ def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
     return urlunsplit((scheme, f"{hostname}:{port}", page_path, "", ""))
 
 
-async def _autotest_novnc_url(container_id: str, container_type_value: str) -> Optional[str]:
-    """autotest_cloud 容器取其自身 6080 endpoint 生成 noVNC 地址；其余返回 None。
+async def _novnc_url(container_id: str, container_type_value: str) -> Optional[str]:
+    """Chrome/VNC 类型查询 6080 endpoint 生成 noVNC 地址；其余返回 None。
 
     读取 6080 失败时返回 None（不影响 SSH/状态查询）。
     """
-    if container_type_value != ContainerType.AUTOTEST_CLOUD.value:
+    try:
+        supports_chrome_vnc = ContainerType(container_type_value).supports_chrome_vnc
+    except ValueError:
+        return None
+    if not supports_chrome_vnc:
         return None
     # noinspection broad-exception
     try:
@@ -315,7 +319,7 @@ class CreateContainerParams:
     cpu: Optional[float] = None
     #: 内存大小，单位固定 Gi，例如 1 / 2
     memory: Optional[int] = None
-    #: 容器类型：testagent_cloud（默认，仅 SSH）或 autotest_cloud（启用 Chrome/VNC）
+    #: 容器具体运行类型，省略时使用仅 SSH 的 testagent_cloud。
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD
 
 
@@ -486,9 +490,9 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
       `PIP_INDEX_URL` / `NPM_CONFIG_REGISTRY` 代理源；CPU / 内存可选覆盖默认资源限制。
       OpenSandbox metadata 额外注入 `testagent-cloud=true`（来源识别）与
       `container-type=<type>`、`testagent-cloud-type=<type>`（类型识别）。
-    - 类型：`testagent_cloud`（默认）只起 SSH；`autotest_cloud` 额外注入
-        `TESTAGENT_ENABLE_CHROME=1`（镜像内拉起 Chrome/VNC，sshd 仍可 SSH 连入），
-        两者底层为同一镜像、仅启动方式不同。
+    - 类型：`testagent_cloud` 与 `evaluation_cloud` 只起 SSH；
+      `testagent_cloud_chrome` 与 `autotest_cloud` 额外注入
+      `TESTAGENT_ENABLE_CHROME=1` 并提供 noVNC endpoint。TestAgent 两种类型共用默认镜像。
     """
     _validate_required(params, validate_gitee=not params.source_service_id)
     if params.source_service_id:
@@ -922,7 +926,7 @@ def _sandbox_create_kwargs(
         "TESTAGENT_CLOUD_PIP_URL": settings.container_pip_index_url,
         "TESTAGENT_CLOUD_NPM_URL": settings.container_npm_registry,
     }
-    if container_type == ContainerType.AUTOTEST_CLOUD.value:
+    if ContainerType(container_type).supports_chrome_vnc:
         env["TESTAGENT_ENABLE_CHROME"] = "1"
     create_kwargs: dict[str, Any] = {
         "name": name,
@@ -1110,8 +1114,8 @@ async def _check_creation_limits(
     当前以「非业务删除记录」计数（业务过期会先置 deleted_at 再停容器），
     手动停止的容器仍视作占用预留槽位。repository 模式按
     `user_id + (gitee_user, gitee_repository)` 区分仓库。
-    数量/模式限制均按容器类型分别计数：同一用户可同时持有
-    testagent_cloud 与 autotest_cloud 各一个容器。
+    数量/模式限制均按具体容器类型分别计数；共用默认镜像的 TestAgent 类型
+    仍分别占用配额。全局数量上限则继续跨类型汇总。
     """
     from application.whitelist import is_whitelisted
 
@@ -1202,7 +1206,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         git_fin_status=get_public_git_fin_status(row.git_fin_status),
         container_type=row.container_type,
         endpoint=endpoint,
-        novnc_url=await _autotest_novnc_url(container_id, row.container_type),
+        novnc_url=await _novnc_url(container_id, row.container_type),
         started_at=status.transitioned_at,
         expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
         cpu_usage=cpu_usage,
@@ -2274,7 +2278,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         status=status,
         git_fin_status=get_public_git_fin_status(row.git_fin_status),
         endpoint=endpoint,
-        novnc_url=await _autotest_novnc_url(row.container_id, row.container_type),
+        novnc_url=await _novnc_url(row.container_id, row.container_type),
         started_at=started_at,
         expires_at=expires_at,
         cpu_usage=cpu_usage,

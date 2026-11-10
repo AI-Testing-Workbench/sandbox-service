@@ -61,7 +61,7 @@ class SetDefaultImageRequest(ImageReferenceRequest):
 
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,
-        description="云端沙箱类型: testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud",
     )
 
 
@@ -91,7 +91,7 @@ class DefaultImageResponse(BaseModel):
     full_name: Optional[str] = Field(default=None, description="当前的默认镜像，未设置时为空")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="云端沙箱类型: testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud",
     )
 
 
@@ -113,24 +113,25 @@ class UserMutationResponse(BaseModel):
     user_id: str = Field(description="用户 ID")
 
 
+_ADMIN_CREATE_EXAMPLE: dict[str, Any] = {
+    "user_id": "10001",
+    "image": "localhost:5000/testagent/app:v1",
+    "from": "",
+    "replace": "",
+    "skip_git": False,
+    "gitee_user": "test_name",
+    "gitee_repository": "test_project",
+    "gitee_branch": "develop",
+    "gitee_url": "https://github.com",
+    "expiration_hours": settings.container_default_expiration_hours,
+    "authorize_general_account": False,
+    "cpu": 1,
+    "memory": 1,
+}
 _ADMIN_CREATE_SCHEMA_EXTRA: dict[str, Any] = {
     "examples": [
-        {
-            "user_id": "10001",
-            "image": "localhost:5000/testagent/app:v1",
-            "from": "",
-            "replace": "",
-            "skip_git": False,
-            "gitee_user": "test_name",
-            "gitee_repository": "test_project",
-            "gitee_branch": "develop",
-            "gitee_url": "https://github.com",
-            "expiration_hours": settings.container_default_expiration_hours,
-            "authorize_general_account": False,
-            "type": "testagent_cloud",
-            "cpu": 1,
-            "memory": 1,
-        }
+        {**_ADMIN_CREATE_EXAMPLE, "type": container_type.value}
+        for container_type in ContainerType
     ]
 }
 
@@ -186,11 +187,11 @@ class AdminCreateContainerResponse(BaseModel):
     service_id: str = Field(description="云端沙箱 服务 ID")
     type: str = Field(
         default=ContainerType.TESTAGENT_CLOUD.value,
-        description="云端沙箱类型: testagent_cloud / autotest_cloud",
+        description="云端沙箱类型：testagent_cloud / testagent_cloud_chrome / autotest_cloud / evaluation_cloud",
     )
     novnc_url: Optional[str] = Field(
         default=None,
-        description="autotest_cloud 云端沙箱的 noVNC 访问地址；其他类型为空",
+        description="Chrome/VNC 类型的 noVNC 地址；SSH-only 类型或 endpoint 不可用时为空",
     )
     status: str = Field(description="云端沙箱状态")
     endpoint: Optional[str] = Field(default=None, description="云端沙箱 SSH 访问端点")

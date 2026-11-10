@@ -3,7 +3,7 @@
 
 - 后端业务逻辑集中于此：镜像列表与可用性、上传（load）、推送（Push）、默认镜像管理、删除；
   REST 接口仅承担必要输入/输出，不重复业务判断。
-- 数据源：本地 Docker（`infra.docker`）+ Registry（`infra.registry`）+ settings（`default_image`）。
+- 数据源：本地 Docker（`infra.docker`）+ Registry（`infra.registry`）+ 镜像组 settings。
 - 失败时：底层详细错误由 infra 层写日志，本层转换为对外业务异常（v4 §14.10）。
 """
 
@@ -510,7 +510,7 @@ async def push_image(full_name: str, tag: Optional[str] = None) -> str:
 
 
 # ---------------------------------------------------------------------------
-# 默认镜像管理（按容器类型分开；testagent_cloud 沿用历史 settings key）
+# 默认镜像管理（按三个逻辑镜像组；TestAgent Chrome 类型共享 TestAgent 组）
 # ---------------------------------------------------------------------------
 async def get_default_image(
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD,
