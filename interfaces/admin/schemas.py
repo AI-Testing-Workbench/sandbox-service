@@ -130,7 +130,19 @@ _ADMIN_CREATE_EXAMPLE: dict[str, Any] = {
 }
 _ADMIN_CREATE_SCHEMA_EXTRA: dict[str, Any] = {
     "examples": [
-        {**_ADMIN_CREATE_EXAMPLE, "type": container_type.value}
+        {
+            **_ADMIN_CREATE_EXAMPLE,
+            **(
+                {
+                    "auto_test_id": "auto_test_id",
+                    "source_business_id": "source_business_id",
+                    "task_type": 0,
+                }
+                if container_type is ContainerType.AUTOTEST_CLOUD
+                else {}
+            ),
+            "type": container_type.value,
+        }
         for container_type in ContainerType
     ]
 }
@@ -199,6 +211,9 @@ class AdminCreateContainerResponse(BaseModel):
     expires_at: Optional[str] = Field(default=None, description="云端沙箱预计删除时间")
     cpu_usage: Optional[float] = Field(default=None, description="云端沙箱 CPU 使用率")
     memory_usage: Optional[float] = Field(default=None, description="云端沙箱内存使用率")
+    auto_test_id: str | None = Field(description="自动化跑批 auto_test_id")
+    source_business_id: str | None = Field(description="自动化跑批 source_business_id")
+    task_type: int | None = Field(description="自动化跑批 task_type")
     image: str = Field(description="完整镜像名称")
     user_id: str = Field(description="用户 ID")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")

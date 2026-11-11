@@ -62,6 +62,9 @@ class Container(Base):
     api_token: Mapped[str] = mapped_column(Text, nullable=False, default="", server_default="")
     authorize_general_account: Mapped[bool] = mapped_column(Boolean)
     git_fin_status: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    auto_test_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    source_business_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    task_type: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     created_at: Mapped[str] = mapped_column(String(32))
     expiration_hours: Mapped[int] = mapped_column(Integer)

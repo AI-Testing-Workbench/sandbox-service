@@ -44,7 +44,19 @@ _USER_CREATE_EXAMPLE: dict[str, Any] = {
 }
 _USER_CREATE_SCHEMA_EXTRA: dict[str, Any] = {
     "examples": [
-        {**_USER_CREATE_EXAMPLE, "type": container_type.value}
+        {
+            **_USER_CREATE_EXAMPLE,
+            **(
+                {
+                    "auto_test_id": "auto_test_id",
+                    "source_business_id": "source_business_id",
+                    "task_type": 0,
+                }
+                if container_type is ContainerType.AUTOTEST_CLOUD
+                else {}
+            ),
+            "type": container_type.value,
+        }
         for container_type in ContainerType
     ]
 }
@@ -72,6 +84,9 @@ class CreateContainerResponse(BaseModel):
     started_at: str | None = Field(default=None, description="云端沙箱启动时间")
     expires_at: str | None = Field(default=None, description="云端沙箱预计删除时间")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
+    auto_test_id: str | None = Field(description="自动化跑批 auto_test_id")
+    source_business_id: str | None = Field(description="自动化跑批 source_business_id")
+    task_type: int | None = Field(description="自动化跑批 task_type")
 
 
 class ContainerStatusResponse(ContainerRuntimeResponse):

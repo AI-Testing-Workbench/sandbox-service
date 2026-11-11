@@ -46,6 +46,9 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
         gitee_repository=view.gitee_repository,
         gitee_url=view.gitee_url,
         gitee_branch=view.gitee_branch,
+        auto_test_id=view.auto_test_id,
+        source_business_id=view.source_business_id,
+        task_type=view.task_type,
     )
 
 
@@ -68,6 +71,9 @@ async def create_container(request: CreateContainerRequest) -> CreateContainerRe
             gitee_user=request.gitee_user,
             gitee_repository=request.gitee_repository,
             gitee_branch=request.gitee_branch,
+            auto_test_id=request.auto_test_id,
+            source_business_id=request.source_business_id,
+            task_type=request.task_type,
             image=None,
             authorize_general_account=request.authorize_general_account,
         )
@@ -83,6 +89,9 @@ async def create_container(request: CreateContainerRequest) -> CreateContainerRe
         novnc_url=view.novnc_url,
         started_at=view.started_at,
         expires_at=add_hours_to_iso(created.created_at, created.expiration_hours),
+        auto_test_id=view.auto_test_id,
+        source_business_id=view.source_business_id,
+        task_type=view.task_type,
     )
 
 

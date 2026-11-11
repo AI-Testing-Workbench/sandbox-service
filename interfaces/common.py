@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
 
 from config import MAX_CONTAINER_EXPIRATION_HOURS, settings
 from domain.models import ContainerType
@@ -58,6 +58,18 @@ class ContainerCreateRequestBase(BaseModel):
         default=False,
         description="是否授权通用码云账户登录",
     )
+    auto_test_id: StrictStr | None = Field(
+        default=None,
+        description="自动化跑批 auto_test_id",
+    )
+    source_business_id: StrictStr | None = Field(
+        default=None,
+        description="自动化跑批 source_business_id",
+    )
+    task_type: StrictInt | None = Field(
+        default=None,
+        description="自动化跑批 task_type",
+    )
 
 
 class ContainerRuntimeResponse(BaseModel):
@@ -84,6 +96,9 @@ class ContainerRuntimeResponse(BaseModel):
     started_at: Optional[str] = Field(default=None, description="云端沙箱启动时间")
     expires_at: Optional[str] = Field(default=None, description="云端沙箱预计删除时间")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
+    auto_test_id: str | None = Field(description="自动化跑批 auto_test_id")
+    source_business_id: str | None = Field(description="自动化跑批 source_business_id")
+    task_type: int | None = Field(description="自动化跑批 task_type")
     cpu_usage: Optional[float] = Field(
         default=None,
         description="云端沙箱 CPU 使用率",

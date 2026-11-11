@@ -24,6 +24,9 @@ _SOURCE_MATCH_FIELDS = (
     "gitee_branch",
     "authorize_general_account",
     "type",
+    "auto_test_id",
+    "source_business_id",
+    "task_type",
 )
 _SOURCE_OVERRIDE_FIELDS = (
     "expiration_hours",
@@ -36,6 +39,9 @@ _SOURCE_MATCH_DATABASE_FIELDS = (
     "gitee_branch",
     "authorize_general_account",
     "container_type",
+    "auto_test_id",
+    "source_business_id",
+    "task_type",
 )
 _SOURCE_OVERRIDE_DATABASE_FIELDS = (
     "expiration_hours",
@@ -48,6 +54,9 @@ _REQUEST_TO_DATABASE_FIELD = {
     "gitee_branch": "gitee_branch",
     "authorize_general_account": "authorize_general_account",
     "type": "container_type",
+    "auto_test_id": "auto_test_id",
+    "source_business_id": "source_business_id",
+    "task_type": "task_type",
     "expiration_hours": "expiration_hours",
 }
 
@@ -130,6 +139,9 @@ class ResolvedContainerSource:
     gitee_url: Optional[str]
     authorize_general_account: Optional[bool]
     expiration_hours: Optional[int]
+    auto_test_id: Optional[str]
+    source_business_id: Optional[str]
+    task_type: Optional[int]
 
 
 async def resolve_container_source(
@@ -142,6 +154,9 @@ async def resolve_container_source(
         gitee_url: Optional[str],
         authorize_general_account: Optional[bool],
         expiration_hours: Optional[int],
+        auto_test_id: Optional[str],
+        source_business_id: Optional[str],
+        task_type: Optional[int],
         container_type: ContainerType,
         explicit_fields: frozenset[str],
 ) -> ResolvedContainerSource:
@@ -161,6 +176,9 @@ async def resolve_container_source(
             "authorize_general_account": authorize_general_account,
             "type": container_type,
             "expiration_hours": expiration_hours,
+            "auto_test_id": auto_test_id,
+            "source_business_id": source_business_id,
+            "task_type": task_type,
         }
         resolved_database_values: dict[str, object] = {
             database_field: requested_values[request_field]
@@ -220,6 +238,12 @@ async def resolve_container_source(
                 resolved_database_values["authorize_general_account"],
             ),
             expiration_hours=cast(Optional[int], resolved_database_values["expiration_hours"]),
+            auto_test_id=cast(Optional[str], resolved_database_values["auto_test_id"]),
+            source_business_id=cast(
+                Optional[str],
+                resolved_database_values["source_business_id"],
+            ),
+            task_type=cast(Optional[int], resolved_database_values["task_type"]),
         )
 
 

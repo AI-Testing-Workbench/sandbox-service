@@ -217,6 +217,9 @@ class Container:
     expiration_hours: int
     deleted_at: Optional[str] = None
     stop_at: Optional[str] = None
+    auto_test_id: Optional[str] = None
+    source_business_id: Optional[str] = None
+    task_type: Optional[int] = None
 
     @property
     def business_deleted(self) -> bool:

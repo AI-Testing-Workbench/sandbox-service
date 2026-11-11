@@ -321,6 +321,9 @@ class CreateContainerParams:
     memory: Optional[int] = None
     #: 容器具体运行类型，省略时使用仅 SSH 的 testagent_cloud。
     container_type: ContainerType = ContainerType.TESTAGENT_CLOUD
+    auto_test_id: Optional[str] = None
+    source_business_id: Optional[str] = None
+    task_type: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -365,6 +368,9 @@ class ContainerStatusView:
     api_token: str = ""
     novnc_url: Optional[str] = None
     git_fin_status: str = "pending"
+    auto_test_id: Optional[str] = None
+    source_business_id: Optional[str] = None
+    task_type: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -401,6 +407,9 @@ class AdminContainerView:
     container_type: str = ContainerType.TESTAGENT_CLOUD.value
     novnc_url: Optional[str] = None
     git_fin_status: str = "pending"
+    auto_test_id: Optional[str] = None
+    source_business_id: Optional[str] = None
+    task_type: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -505,6 +514,9 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             gitee_url=params.gitee_url,
             authorize_general_account=params.authorize_general_account,
             expiration_hours=params.expiration_hours,
+            auto_test_id=params.auto_test_id,
+            source_business_id=params.source_business_id,
+            task_type=params.task_type,
             container_type=params.container_type,
             explicit_fields=params.explicit_fields,
         )
@@ -516,9 +528,13 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             gitee_url=source.gitee_url,
             authorize_general_account=source.authorize_general_account,
             expiration_hours=source.expiration_hours,
+            auto_test_id=source.auto_test_id,
+            source_business_id=source.source_business_id,
+            task_type=source.task_type,
             container_type=source.container_type,
         )
         _validate_required(params)
+    _validate_autotest_fields(params)
     gitee_url = _normalise_optional_gitee_value(params.gitee_url)
     gitee_user = _normalise_optional_gitee_value(params.gitee_user)
     gitee_repository = _normalise_optional_gitee_value(params.gitee_repository)
@@ -673,6 +689,9 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                         created_at=created_at,
                         expiration_hours=expiration_hours,
                         authorize_general_account=params.authorize_general_account is True,
+                        auto_test_id=params.auto_test_id,
+                        source_business_id=params.source_business_id,
+                        task_type=params.task_type,
                     )
                 )
         except Exception as exc:
@@ -819,6 +838,9 @@ async def _prepare_container_replacement(
         except ValueError:
             raise BusinessConflictError("目标云端沙箱类型无效") from None
 
+        resolved_type_params = replace(params, container_type=container_type)
+        _validate_autotest_fields(resolved_type_params)
+
         explicit = params.explicit_fields
         if "type" in explicit and params.container_type is not container_type:
             raise BusinessConflictError("请求的云端沙箱类型与目标不一致")
@@ -836,6 +858,24 @@ async def _prepare_container_replacement(
             persisted_value = _normalise_optional_gitee_value(persisted)
             if requested_value != persisted_value:
                 raise BusinessConflictError("请求的码云配置与目标云端沙箱不一致")
+
+        task_string_fields = (
+            ("auto_test_id", params.auto_test_id, row.auto_test_id),
+            ("source_business_id", params.source_business_id, row.source_business_id),
+        )
+        for field_name, requested, persisted in task_string_fields:
+            if field_name not in explicit or (
+                requested is not None and not requested.strip()
+            ):
+                continue
+            if requested != persisted:
+                raise BusinessConflictError("Autotest 任务字段与目标云端沙箱不一致")
+        if (
+            "task_type" in explicit
+            and params.task_type is not None
+            and params.task_type != row.task_type
+        ):
+            raise BusinessConflictError("Autotest 任务字段与目标云端沙箱不一致")
 
         authorize_general_account = bool(row.authorize_general_account)
         if (
@@ -1081,6 +1121,30 @@ def _validate_resource_overrides(params: CreateContainerParams) -> None:
         raise InvalidArgumentError("memory 必须为正整数")
 
 
+def _validate_autotest_fields(params: CreateContainerParams) -> None:
+    """Reject task metadata on non-Autotest types before creation side effects."""
+    if params.auto_test_id is not None and not isinstance(params.auto_test_id, str):
+        raise InvalidArgumentError("auto_test_id 必须为字符串")
+    if params.source_business_id is not None and not isinstance(
+        params.source_business_id,
+        str,
+    ):
+        raise InvalidArgumentError("source_business_id 必须为字符串")
+    if params.task_type is not None and (
+        isinstance(params.task_type, bool) or not isinstance(params.task_type, int)
+    ):
+        raise InvalidArgumentError("task_type 必须为整数")
+
+    if params.container_type is ContainerType.AUTOTEST_CLOUD:
+        return
+    if (
+        params.auto_test_id is not None and params.auto_test_id.strip()
+        or params.source_business_id is not None and params.source_business_id.strip()
+        or params.task_type is not None
+    ):
+        raise InvalidArgumentError("Autotest 任务字段仅适用于 autotest_cloud 类型")
+
+
 def _normalise_optional_gitee_value(value: Optional[str]) -> str:
     """将未填写或仅含空白的码云字段统一为空字符串。"""
     if value is None:
@@ -1216,6 +1280,9 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         api_token=row.api_token,
         gitee_user=row.gitee_user,
         gitee_repository=row.gitee_repository,
+        auto_test_id=row.auto_test_id,
+        source_business_id=row.source_business_id,
+        task_type=row.task_type,
     )
 
 
@@ -1242,6 +1309,9 @@ def _stopped_status_view(row: ContainerRow) -> ContainerStatusView:
         gitee_user=row.gitee_user,
         gitee_repository=row.gitee_repository,
         git_fin_status=get_public_git_fin_status(row.git_fin_status),
+        auto_test_id=row.auto_test_id,
+        source_business_id=row.source_business_id,
+        task_type=row.task_type,
     )
 
 
@@ -2285,6 +2355,9 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         memory_usage=memory_usage,
         deleted_at=row.deleted_at,
         business_deleted=row.deleted_at is not None,
+        auto_test_id=row.auto_test_id,
+        source_business_id=row.source_business_id,
+        task_type=row.task_type,
     )
 
 
@@ -2305,6 +2378,9 @@ async def _get_admin_runtime(row: ContainerRow) -> ContainerStatusView:
             started_at=cached.started_at,
             cpu_usage=cached.cpu_usage,
             memory_usage=cached.memory_usage,
+            auto_test_id=row.auto_test_id,
+            source_business_id=row.source_business_id,
+            task_type=row.task_type,
         )
 
     # 保留旧缓存的兼容读取路径：测试或进程升级期间可能只有状态缓存。
@@ -2314,6 +2390,9 @@ async def _get_admin_runtime(row: ContainerRow) -> ContainerStatusView:
             container_id=container_id,
             service_id=row.service_id,
             status=cached_status,
+            auto_test_id=row.auto_test_id,
+            source_business_id=row.source_business_id,
+            task_type=row.task_type,
         )
 
     return await get_status(row.service_id, enforce_user_policy=False)
