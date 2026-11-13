@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictInt, StrictStr
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr
 
 from config import MAX_CONTAINER_EXPIRATION_HOURS, settings
 from domain.models import ContainerType
@@ -41,6 +41,10 @@ class ContainerCreateRequestBase(BaseModel):
     skip_git: bool = Field(
         default=False,
         description="是否跳过 git 验证",
+    )
+    enable_testagent_auto_start: StrictBool = Field(
+        default=True,
+        description="是否自动启动 TestAgent",
     )
     type: ContainerType = Field(
         default=ContainerType.TESTAGENT_CLOUD,

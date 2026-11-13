@@ -307,6 +307,7 @@ class CreateContainerParams:
     user_id: str
     source_service_id: str = ""
     skip_git: bool = False
+    enable_testagent_auto_start: bool = True
     explicit_fields: frozenset[str] = frozenset()
     image: Optional[str] = None
     gitee_user: Optional[str] = None
@@ -347,6 +348,7 @@ class _ContainerReplacementPlan:
     expiration_hours_update: Optional[int]
     created_at: str
     authorize_general_account: bool
+    enable_testagent_auto_start: bool
     resource_limits: dict[str, str]
 
 
@@ -635,6 +637,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                 authorize_general_account=params.authorize_general_account is True,
                 resource_limits=await _resource_limits(params),
                 volumes=volumes,
+                enable_testagent_auto_start=params.enable_testagent_auto_start,
             )
             created = await opensandbox_client.create(image, **create_kwargs)
         except Exception as exc:
@@ -931,6 +934,7 @@ async def _prepare_container_replacement(
         expiration_hours_update=expiration_hours_update,
         created_at=created_at,
         authorize_general_account=authorize_general_account,
+        enable_testagent_auto_start=params.enable_testagent_auto_start,
         resource_limits=resource_limits,
     )
 
@@ -948,6 +952,7 @@ def _sandbox_create_kwargs(
     authorize_general_account: bool,
     resource_limits: dict[str, str],
     volumes: Optional[list[SandboxVolume]],
+    enable_testagent_auto_start: bool = True,
 ) -> dict[str, Any]:
     """Build common OpenSandbox metadata, environment, resources, and volumes."""
     env = {
@@ -956,6 +961,7 @@ def _sandbox_create_kwargs(
         "TESTAGENT_CLOUD_SERVICE_USER": user_id,
         "TESTAGENT_CLOUD_SERVICE_ID": service_id,
         "TESTAGENT_CLOUD_SERVICE_URL": settings.service_url,
+        "TESTAGENT_AUTO_START": "1" if enable_testagent_auto_start else "0",
         "TESTAGENT_CLOUD_GITEE_USER": gitee_user,
         "TESTAGENT_CLOUD_GITEE_REPOSITORY": gitee_repository,
         "TESTAGENT_CLOUD_GITEE_BRANCH": gitee_branch or "",
@@ -1670,6 +1676,9 @@ async def _rebuild_backend(
             authorize_general_account=authorize_general_account,
             resource_limits=resource_limits,
             volumes=volumes,
+            enable_testagent_auto_start=(
+                replacement.enable_testagent_auto_start if replacement is not None else True
+            ),
         )
 
         client = get_opensandbox_client()

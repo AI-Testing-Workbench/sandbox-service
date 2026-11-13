@@ -119,6 +119,7 @@ _ADMIN_CREATE_EXAMPLE: dict[str, Any] = {
     "from": "",
     "replace": "",
     "skip_git": False,
+    "enable_testagent_auto_start": True,
     "gitee_user": "test_name",
     "gitee_repository": "test_project",
     "gitee_branch": "develop",
