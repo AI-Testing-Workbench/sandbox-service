@@ -11,7 +11,7 @@ from domain.errors import BusinessConflictError, ContainerNotFoundError
 from domain.models import ContainerType
 from infra.db import session_scope
 from infra.orm import Container as ContainerRow
-from infra.repositories import ContainerRepository
+from infra.repositories import AdminUserRepository, ContainerRepository
 
 
 __all__ = ["ResolvedContainerSource", "resolve_container_source"]
@@ -132,6 +132,7 @@ _validate_source_field_configuration()
 
 @dataclass(frozen=True)
 class ResolvedContainerSource:
+    source_user_id: str
     container_type: ContainerType
     gitee_user: Optional[str]
     gitee_repository: Optional[str]
@@ -159,14 +160,22 @@ async def resolve_container_source(
         task_type: Optional[int],
         container_type: ContainerType,
         explicit_fields: frozenset[str],
+        _from_param_admin_flag: bool = False,
 ) -> ResolvedContainerSource:
     """Load a source row and apply clone-specific inheritance and equality rules."""
     async with session_scope() as session:
         source = await ContainerRepository(session).get_by_service_id(service_id)
-        if source is None or source.user_id != user_id:
-            # Treat ownership mismatch like an unknown source to avoid disclosing
-            # whether another user's service ID exists.
-            raise ContainerNotFoundError("此用户未拥有这个服务 ID 对应的沙箱")
+        if source is None:
+            raise ContainerNotFoundError("无法使用这个来源服务创建沙箱")
+        if source.user_id != user_id:
+            is_admin_target = (
+                _from_param_admin_flag
+                and await AdminUserRepository(session).exists(user_id)
+            )
+            if not is_admin_target:
+                # Treat ownership mismatch like an unknown source to avoid
+                # disclosing whether another user's service ID exists.
+                raise ContainerNotFoundError("无法使用这个来源服务创建沙箱")
 
         requested_values: dict[str, object] = {
             "gitee_user": gitee_user,
@@ -228,6 +237,7 @@ async def resolve_container_source(
             )
 
         return ResolvedContainerSource(
+            source_user_id=source.user_id,
             container_type=cast(ContainerType, resolved_database_values["container_type"]),
             gitee_user=cast(Optional[str], resolved_database_values["gitee_user"]),
             gitee_repository=cast(Optional[str], resolved_database_values["gitee_repository"]),

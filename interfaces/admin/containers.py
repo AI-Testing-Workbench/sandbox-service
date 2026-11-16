@@ -65,6 +65,7 @@ async def create_container(request: AdminCreateContainerRequest) -> AdminCreateC
     params = container_service.CreateContainerParams(
         user_id=request.user_id,
         source_service_id=request.from_,
+        from_param_admin_flag=bool(request.from_),
         skip_git=request.skip_git,
         enable_testagent_auto_start=request.enable_testagent_auto_start,
         explicit_fields=frozenset(request.model_fields_set),

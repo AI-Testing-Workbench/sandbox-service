@@ -325,6 +325,7 @@ class CreateContainerParams:
     auto_test_id: Optional[str] = None
     source_business_id: Optional[str] = None
     task_type: Optional[int] = None
+    from_param_admin_flag: bool = False
 
 
 @dataclass(frozen=True)
@@ -506,6 +507,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
       `TESTAGENT_ENABLE_CHROME=1` 并提供 noVNC endpoint。TestAgent 两种类型共用默认镜像。
     """
     _validate_required(params, validate_gitee=not params.source_service_id)
+    source_user_id = params.user_id
     if params.source_service_id:
         source = await resolve_container_source(
             params.source_service_id,
@@ -521,7 +523,9 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
             task_type=params.task_type,
             container_type=params.container_type,
             explicit_fields=params.explicit_fields,
+            _from_param_admin_flag=params.from_param_admin_flag,
         )
+        source_user_id = source.source_user_id
         params = replace(
             params,
             gitee_user=source.gitee_user,
@@ -591,7 +595,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                 if params.source_service_id:
                     try:
                         source_plan = build_volume_path_plan(
-                            params.user_id,
+                            source_user_id,
                             params.source_service_id,
                         )
                         await asyncio.to_thread(

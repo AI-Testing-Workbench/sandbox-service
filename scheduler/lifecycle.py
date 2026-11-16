@@ -206,8 +206,8 @@ async def purge_containers() -> list[str]:
                     except (TypeError, ValueError):
                         logger.exception("物理保留时间字段非法，保留本地记录: %s", container_id)
 
-                client = _container.get_opensandbox_client()
                 if not purge_due:
+                    client = _container.get_opensandbox_client()
                     if current.stop_at is not None:
                         # A prior business-delete request may have been interrupted
                         # after persisting intent but before the remote Delete.
@@ -244,8 +244,33 @@ async def purge_containers() -> list[str]:
                             continue
                     continue
 
+                is_failed = (
+                    isinstance(current.git_fin_status, str)
+                    and current.git_fin_status.startswith("failed_")
+                )
+                if current.expiration_hours == 0 and not is_failed:
+                    if current.stop_at is not None:
+                        # Finish a persisted remote Delete intent, but retain the
+                        # zero-expiration service row and its volume indefinitely.
+                        client = _container.get_opensandbox_client()
+                        try:
+                            await client.delete(container_id)
+                        except SandboxNotFoundError:
+                            pass
+                        except Exception as exc:  # noqa: BLE001
+                            logger.error(
+                                "重试删除业务删除后端失败 %s: %s: %s",
+                                container_id,
+                                type(exc).__name__,
+                                exc,
+                            )
+                            continue
+                        await repo.clear_stop_intent(container_id)
+                    continue
+
                 # At retention expiry, remote absence is idempotent success and
                 # the service's volume/record may finally be removed.
+                client = _container.get_opensandbox_client()
                 try:
                     await client.delete(container_id)
                 except SandboxNotFoundError:
