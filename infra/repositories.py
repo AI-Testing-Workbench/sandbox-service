@@ -139,6 +139,24 @@ class ContainerRepository:
         result = await self._session.execute(stmt)
         return int(result.scalar_one())
 
+    async def count_active_non_admin_containers(self) -> int:
+        """Count non-deleted containers whose owners are not administrators.
+
+        Explicit whitelist membership does not affect this count.
+        """
+        admin_user_exists = (
+            select(AdminUserRow.user_id)
+            .where(AdminUserRow.user_id == Container.user_id)
+            .exists()
+        )
+        stmt = (
+            select(func.count())
+            .select_from(Container)
+            .where(Container.deleted_at.is_(None), ~admin_user_exists)
+        )
+        result = await self._session.execute(stmt)
+        return int(result.scalar_one())
+
     async def business_delete(self, container_id: str, deleted_at: str) -> None:
         """业务删除：持久化业务删除及远端删除意图，记录保留。"""
         container = await self.get(container_id)

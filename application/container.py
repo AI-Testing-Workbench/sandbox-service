@@ -1182,14 +1182,15 @@ async def _check_creation_limits(
     gitee_repository: str,
     container_type: ContainerType,
 ) -> None:
-    """创建限制（v4 §11.2）：白名单跳过；模式限制 + 数量限制。
+    """创建限制（v4 §11.2）：白名单跳过；模式限制 + 全局数量限制。
 
     计数口径：`running`/`pending` 计入、`stopped`/`business_deleted` 不计；
     当前以「非业务删除记录」计数（业务过期会先置 deleted_at 再停容器），
     手动停止的容器仍视作占用预留槽位。repository 模式按
     `user_id + (gitee_user, gitee_repository)` 区分仓库。
     数量/模式限制均按具体容器类型分别计数；共用默认镜像的 TestAgent 类型
-    仍分别占用配额。全局数量上限则继续跨类型汇总。
+    仍分别占用配额。全局数量上限跨类型汇总，但不计管理员用户的容器；
+    显式白名单用户的容器仍占用该全局配额。
     """
     from application.whitelist import is_whitelisted
 
@@ -1212,7 +1213,7 @@ async def _check_creation_limits(
         raise BusinessConflictError(f"不支持的创建限制模式: {mode}")
 
     limit = await _cfg_count_limit()
-    if 0 < limit <= await repo.count_active():
+    if 0 < limit <= await repo.count_active_non_admin_containers():
         raise LimitReachedError("可用云端沙箱数量已达到上限")
 
 
