@@ -6,7 +6,12 @@ from fastapi import APIRouter, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from application import robot as robot_service
-from interfaces.common import api_responses
+from interfaces.common import (
+    GiteeUrlHistoryItem,
+    GiteeUrlsRequest,
+    GiteeUrlsResponse,
+    api_responses,
+)
 
 router = APIRouter(prefix="/robot", tags=["招呼机器人 API"])
 
@@ -15,21 +20,6 @@ class SetApiTokenRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     api_token: str = Field(min_length=1, strict=True, description="云端沙箱中 TestAgent 的 API Token")
-
-
-class GiteeUrlsRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    user_id: str = Field(min_length=1, strict=True, description="用户 ID")
-
-
-class GiteeUrlHistoryItem(BaseModel):
-    gitee_url: str
-    gitee_branch: str
-
-
-class GiteeUrlsResponse(BaseModel):
-    gitee_urls: list[GiteeUrlHistoryItem]
 
 
 @router.post(

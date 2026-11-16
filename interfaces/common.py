@@ -13,6 +13,9 @@ from domain.models import ContainerType
 
 __all__ = [
     "ErrorResponse",
+    "GiteeUrlsRequest",
+    "GiteeUrlHistoryItem",
+    "GiteeUrlsResponse",
     "ContainerCreateRequestBase",
     "ContainerRuntimeResponse",
     "ExpirationRequest",
@@ -27,6 +30,21 @@ class ErrorResponse(BaseModel):
 
     code: str = Field(description="错误码")
     message: str = Field(description="错误详情")
+
+
+class GiteeUrlsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str = Field(min_length=1, strict=True, description="用户 ID")
+
+
+class GiteeUrlHistoryItem(BaseModel):
+    gitee_url: str
+    gitee_branch: str
+
+
+class GiteeUrlsResponse(BaseModel):
+    gitee_urls: list[GiteeUrlHistoryItem]
 
 
 class ContainerCreateRequestBase(BaseModel):

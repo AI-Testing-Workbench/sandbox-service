@@ -6,9 +6,14 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 
-from application import admin_users, container, whitelist
+from application import admin_users, container, robot, whitelist
 from config import settings
-from interfaces.common import api_responses
+from interfaces.common import (
+    GiteeUrlHistoryItem,
+    GiteeUrlsRequest,
+    GiteeUrlsResponse,
+    api_responses,
+)
 from interfaces.user.schemas import (
     AdminCheckRequest,
     AdminCheckResponse,
@@ -51,4 +56,25 @@ async def map_container(request: MapContainerRequest) -> MapContainerResponse:
     """查询运行中服务的后端 ID；主动 Stop 后、重建前返回 404。"""
     return MapContainerResponse(
         container_id=await container.map_container_id(request.user_id, request.service_id)
+    )
+
+
+@router.post(
+    "/gitee-urls",
+    response_model=GiteeUrlsResponse,
+    status_code=200,
+    operation_id="user_list_gitee_urls",
+    responses=api_responses("成功", 200, 400),
+)
+async def list_gitee_urls(request: GiteeUrlsRequest) -> GiteeUrlsResponse:
+    """列举指定用户的码云记录。"""
+    rows = await robot.list_gitee_urls(request.user_id)
+    return GiteeUrlsResponse(
+        gitee_urls=[
+            GiteeUrlHistoryItem(
+                gitee_url=row.gitee_url,
+                gitee_branch=row.gitee_branch,
+            )
+            for row in rows
+        ]
     )
