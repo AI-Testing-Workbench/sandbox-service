@@ -65,6 +65,7 @@ class CachedRuntimeStatus:
 
     status: ContainerStatus
     endpoint: Optional[str] = None
+    api_url: Optional[str] = None
     started_at: Optional[str] = None
     cpu_usage: Optional[float] = None
     memory_usage: Optional[float] = None
@@ -391,6 +392,7 @@ async def refresh_status_cache() -> None:
         updated_runtime: CachedRuntimeStatus = CachedRuntimeStatus(
             status=resolved_status,
             endpoint=runtime.endpoint,
+            api_url=runtime.api_url,
             started_at=runtime.started_at,
             git_fin_status=get_public_git_fin_status(current_git_fin_status),
             cpu_usage=runtime.cpu_usage if resolved_status is ContainerStatus.RUNNING else None,
@@ -497,6 +499,7 @@ async def _fetch_runtime_status(
         )
 
     endpoint: Optional[str] = None
+    api_url: Optional[str] = None
     client = _container.get_opensandbox_client()
     # noinspection broad-exception
     try:
@@ -522,6 +525,19 @@ async def _fetch_runtime_status(
             exc,
         )
         failed = True
+
+    if status is ContainerStatus.RUNNING:
+        # noinspection broad-exception
+        try:
+            api_endpoint = await client.get_endpoint(
+                container_id,
+                Constants.CONTAINER_TSCODE_API_PORT.value,
+            )
+            api_url = api_endpoint.endpoint or None
+        except SandboxNotFoundError:
+            return None, True, False
+        except Exception:  # noqa: BLE001 The Tscode endpoint is optional.
+            api_url = None
 
     cpu_usage: Optional[float] = None
     memory_usage: Optional[float] = None
@@ -550,6 +566,7 @@ async def _fetch_runtime_status(
         CachedRuntimeStatus(
             status=status,
             endpoint=endpoint,
+            api_url=api_url,
             started_at=started_at,
             cpu_usage=cpu_usage,
             memory_usage=memory_usage,

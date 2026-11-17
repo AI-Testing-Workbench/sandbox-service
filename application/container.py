@@ -71,6 +71,7 @@ from domain.models import (
     GitStatus,
     add_hours_to_iso,
     get_public_git_fin_status,
+    map_runtime_state,
     resolve_container_status,
 )
 from infra.db import session_scope
@@ -368,6 +369,7 @@ class ContainerStatusView:
     gitee_repository: str = ""
     gitee_url: str = ""
     gitee_branch: Optional[str] = None
+    api_url: Optional[str] = None
     api_token: str = ""
     novnc_url: Optional[str] = None
     git_fin_status: str = "pending"
@@ -401,6 +403,7 @@ class AdminContainerView:
     authorize_general_account: bool
     status: ContainerStatus
     endpoint: Optional[str]
+    api_url: Optional[str]
     started_at: Optional[str]
     expires_at: Optional[str]
     cpu_usage: Optional[float]
@@ -1267,6 +1270,24 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
     except Exception as exc:  # noqa: BLE001
         _raise_backend_service_error("获取容器端点", exc)
 
+    api_url: Optional[str] = None
+    if map_runtime_state(status.state) is ContainerStatus.RUNNING:
+        # noinspection broad-exception
+        try:
+            api_ep: SandboxEndpoint = await get_opensandbox_client().get_endpoint(
+                container_id,
+                Constants.CONTAINER_TSCODE_API_PORT.value,
+            )
+            api_url = api_ep.endpoint or None
+        except SandboxNotFoundError as exc:
+            await mark_missing_container_business_deleted(container_id)
+            current = await _get_service_record_snapshot(row.service_id)
+            if current is not None and current.stop_at is not None:
+                return _stopped_status_view(current)
+            raise ContainerNotFoundError("云端沙箱后端不存在") from exc
+        except Exception:  # noqa: BLE001 Tscode endpoint is optional runtime data.
+            api_url = None
+
     # A paused/transitioning sandbox cannot serve execd metrics.  Metrics are
     # optional, so do not delay the lifecycle status response for that probe.
     if business is ContainerStatus.RUNNING:
@@ -1281,6 +1302,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         git_fin_status=get_public_git_fin_status(row.git_fin_status),
         container_type=row.container_type,
         endpoint=endpoint,
+        api_url=api_url,
         novnc_url=await _novnc_url(container_id, row.container_type),
         started_at=status.transitioned_at,
         expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
@@ -1313,6 +1335,7 @@ def _stopped_status_view(row: ContainerRow) -> ContainerStatusView:
         status=resolve_container_status(row.git_fin_status, lifecycle_status),
         container_type=row.container_type,
         started_at=None,
+        api_url=None,
         expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
         gitee_url=row.gitee_url,
         gitee_branch=row.gitee_branch,
@@ -2331,6 +2354,7 @@ def _is_image_not_found_error(exc: Exception) -> bool:
 async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
     cpu_usage: Optional[float] = None
     memory_usage: Optional[float] = None
+    api_url: Optional[str] = None
     # 有效期来自持久化业务字段，不能依赖运行时状态缓存。
     expires_at = add_hours_to_iso(row.created_at, row.expiration_hours)
     if row.deleted_at is not None:
@@ -2341,6 +2365,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         runtime = await _get_admin_runtime(row)
         status = resolve_container_status(row.git_fin_status, runtime.status)
         endpoint = runtime.endpoint
+        api_url = runtime.api_url
         started_at = runtime.started_at
         cpu_usage = runtime.cpu_usage
         memory_usage = runtime.memory_usage
@@ -2362,6 +2387,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         status=status,
         git_fin_status=get_public_git_fin_status(row.git_fin_status),
         endpoint=endpoint,
+        api_url=api_url,
         novnc_url=await _novnc_url(row.container_id, row.container_type),
         started_at=started_at,
         expires_at=expires_at,
@@ -2389,6 +2415,7 @@ async def _get_admin_runtime(row: ContainerRow) -> ContainerStatusView:
             status=cached.status,
             git_fin_status=cached.git_fin_status,
             endpoint=cached.endpoint,
+            api_url=cached.api_url,
             started_at=cached.started_at,
             cpu_usage=cached.cpu_usage,
             memory_usage=cached.memory_usage,

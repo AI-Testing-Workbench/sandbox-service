@@ -217,6 +217,7 @@ class AdminCreateContainerResponse(BaseModel):
     task_type: int | None = Field(description="自动化跑批 task_type")
     image: str = Field(description="完整镜像名称")
     user_id: str = Field(description="用户 ID")
+    api_url: Optional[str] = Field(default=None, description="云端沙箱中 TestAgent 的 API 地址")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
     gitee_user: str = Field(description="码云用户名")
     gitee_repository: str = Field(description="码云仓库")

@@ -84,6 +84,7 @@ class CreateContainerResponse(BaseModel):
     endpoint: str | None = Field(default=None, description="云端沙箱 SSH 访问端点")
     started_at: str | None = Field(default=None, description="云端沙箱启动时间")
     expires_at: str | None = Field(default=None, description="云端沙箱预计删除时间")
+    api_url: str | None = Field(default=None, description="云端沙箱中 TestAgent 的 API 地址")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
     auto_test_id: str | None = Field(description="自动化跑批 auto_test_id")
     source_business_id: str | None = Field(description="自动化跑批 source_business_id")
