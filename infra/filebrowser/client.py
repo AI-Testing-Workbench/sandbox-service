@@ -15,7 +15,12 @@ from urllib.parse import quote, urlsplit
 
 import requests
 
-from infra.filebrowser.types import FileBrowserItem, FileBrowserItems, FileBrowserResource
+from infra.filebrowser.types import (
+    FileBrowserItem,
+    FileBrowserItems,
+    FileBrowserResource,
+    FileBrowserShare,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +42,7 @@ __all__ = [
 FILEBROWSER_SOURCE = "根目录"
 _RESOURCES_ENDPOINT = "resources"
 _ITEMS_ENDPOINT = "resources/items"
+_SHARE_ENDPOINT = "share"
 
 
 class FileBrowserError(Exception):
@@ -231,6 +237,82 @@ class FileBrowserClient:
             logger.warning("FileBrowser 目录复制部分失败或响应不完整")
             raise FileBrowserPartialCopyError("FileBrowser 目录复制未完整成功")
 
+    def create_share(self, path: str) -> FileBrowserShare:
+        """为指定目录创建永久普通分享，返回 FileBrowser 生成的 hash。"""
+        body: dict[str, Any] = {
+            "source": self.SOURCE,
+            "path": _validate_path(path),
+            "shareType": "normal",
+            "allowCreate": True,
+            "allowDelete": True,
+            "allowModify": True,
+            "allowReplacements": True,
+            "allowedUsernames": [],
+            "disableAnonymous": False,
+            "disableDownload": False,
+            "disableFileViewer": False,
+            "disableLoginOption": True,
+            "disableShareCard": False,
+            "disableSidebar": True,
+            "disableThumbnails": True,
+            "downloadsLimit": 0,
+            "enableOnlyOffice": False,
+            "enforceDarkLightMode": "default",
+            "expires": "",
+            "extractEmbeddedSubtitles": False,
+            "favicon": "",
+            "hash": "",
+            "hideFileExt": "",
+            "hideNavButtons": False,
+            "keepAfterExpiration": True,
+            "maxBandwidth": 0,
+            "password": "",
+            "perUserDownloadLimit": False,
+            "quickDownload": True,
+            "shareTheme": "default",
+            "showHidden": True,
+            "sidebarLinks": [
+                {
+                    "name": "打包下载",
+                    "category": "download",
+                    "target": "#",
+                    "icon": "download",
+                },
+            ],
+            "themeColor": "",
+            "title": "云端沙箱产物共享链接",
+            "unit": "",
+            "viewMode": "list",
+            "banner": "",
+            "description": "",
+        }
+        response = self._request(
+            "POST",
+            _SHARE_ENDPOINT,
+            path=None,
+            json_body=body,
+            retryable=False,
+        )
+        payload = self._json_object(response, "创建分享")
+        share_hash = payload.get("hash")
+        if not isinstance(share_hash, str) or not share_hash.strip():
+            logger.error("FileBrowser 创建分享响应缺少有效 hash")
+            raise FileBrowserResponseError("FileBrowser 创建分享响应缺少有效 hash")
+        return FileBrowserShare(hash=share_hash, raw=payload)
+
+    def delete_share(self, share_hash: str) -> bool:
+        """按 FileBrowser hash 删除分享。"""
+        if not isinstance(share_hash, str) or not share_hash.strip():
+            raise ValueError("FileBrowser 分享 hash 不能为空")
+        response = self._request(
+            "DELETE",
+            _SHARE_ENDPOINT,
+            path=None,
+            query_params={"hash": share_hash},
+            retryable=True,
+        )
+        return response is not None and 200 <= response.status_code < 300
+
     def _request(
         self,
         method: str,
@@ -240,15 +322,16 @@ class FileBrowserClient:
         is_directory: Optional[bool] = None,
         data: Optional[bytes] = None,
         json_body: Optional[Mapping[str, Any]] = None,
+        query_params: Optional[Mapping[str, str]] = None,
         retryable: bool,
         allow_not_found: bool = False,
     ) -> Optional[requests.Response]:
         if path is not None:
             path = _validate_path(path)
         url = f"{self._api_url}/{endpoint.lstrip('/')}"
-        params: dict[str, str] = {}
+        params: dict[str, str] = dict(query_params or {})
         if path is not None:
-            params = {"source": self.SOURCE, "path": path}
+            params.update({"source": self.SOURCE, "path": path})
         if is_directory is not None and path is not None:
             params["isDir"] = "true" if is_directory else "false"
         attempts = self._max_retries + 1 if retryable else 1

@@ -86,6 +86,7 @@ class CreateContainerResponse(BaseModel):
     expires_at: str | None = Field(default=None, description="云端沙箱预计删除时间")
     api_url: str | None = Field(default=None, description="云端沙箱中 TestAgent 的 API 地址")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
+    file_share_url: str = Field(default="", description="云端沙箱产物共享链接")
     auto_test_id: str | None = Field(description="自动化跑批 auto_test_id")
     source_business_id: str | None = Field(description="自动化跑批 source_business_id")
     task_type: int | None = Field(description="自动化跑批 task_type")

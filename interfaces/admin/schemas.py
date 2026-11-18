@@ -219,6 +219,7 @@ class AdminCreateContainerResponse(BaseModel):
     user_id: str = Field(description="用户 ID")
     api_url: Optional[str] = Field(default=None, description="云端沙箱中 TestAgent 的 API 地址")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
+    file_share_url: str = Field(default="", description="云端沙箱产物共享链接")
     gitee_user: str = Field(description="码云用户名")
     gitee_repository: str = Field(description="码云仓库")
     gitee_branch: Optional[str] = Field(default=None, description="码云分支，未设置时为空")

@@ -15,7 +15,12 @@ from infra.filebrowser.client import (
     FileBrowserServerError,
     FileBrowserTransportError,
 )
-from infra.filebrowser.types import FileBrowserItem, FileBrowserItems, FileBrowserResource
+from infra.filebrowser.types import (
+    FileBrowserItem,
+    FileBrowserItems,
+    FileBrowserResource,
+    FileBrowserShare,
+)
 
 __all__ = [
     "FILEBROWSER_SOURCE",
@@ -32,4 +37,5 @@ __all__ = [
     "FileBrowserResource",
     "FileBrowserItem",
     "FileBrowserItems",
+    "FileBrowserShare",
 ]

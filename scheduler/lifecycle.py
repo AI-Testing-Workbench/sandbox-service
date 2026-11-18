@@ -287,7 +287,11 @@ async def purge_containers() -> list[str]:
                         exc,
                     )
                     continue
-                await _container.cleanup_volume_for_container(current.user_id, current.service_id)
+                await _container.cleanup_volume_for_container(
+                    current.user_id,
+                    current.service_id,
+                    current.file_share_key,
+                )
                 await repo.delete(container_id)
                 _discard_cached_status(container_id)
                 purged.append(container_id)

@@ -28,7 +28,7 @@ from typing import (
     Optional,
     cast,
 )
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
 from application.blacklist import ensure_user_not_blacklisted
@@ -191,6 +191,19 @@ def _build_novnc_url(endpoint: Optional[str]) -> Optional[str]:
     return urlunsplit((scheme, f"{hostname}:{port}", page_path, "", ""))
 
 
+def _build_file_share_url(file_share_key: str) -> str:
+    """按数据库 key 和当前代理基础地址动态构造分享 URL，不持久化完整地址。"""
+    base_url = settings.filebrowser_url
+    if not file_share_key or not base_url:
+        return ""
+    parsed = urlsplit(base_url)
+    base_path = parsed.path.rstrip("/")
+    if base_path.endswith("/api"):
+        base_path = base_path[:-4]
+    share_path = f"{base_path}/public/share/{quote(file_share_key, safe='')}"
+    return urlunsplit((parsed.scheme, parsed.netloc, share_path, "", ""))
+
+
 async def _novnc_url(container_id: str, container_type_value: str) -> Optional[str]:
     """Chrome/VNC 类型查询 6080 endpoint 生成 noVNC 地址；其余返回 None。
 
@@ -243,22 +256,53 @@ async def mark_missing_container_business_deleted(container_id: str) -> bool:
     return True
 
 
-async def cleanup_volume_for_container(user_id: str, service_id: str) -> None:
+async def cleanup_volume_for_container(
+    user_id: str,
+    service_id: str,
+    file_share_key: str = "",
+) -> None:
     """在线程池执行同步 FileBrowser 清理，避免阻塞 asyncio 事件循环。"""
-    await asyncio.to_thread(_cleanup_volume_for_container_sync, user_id, service_id)
+    await asyncio.to_thread(
+        _cleanup_volume_for_container_sync,
+        user_id,
+        service_id,
+        file_share_key,
+    )
 
 
-def _cleanup_volume_for_container_sync(user_id: str, service_id: str) -> None:
+def _cleanup_volume_for_container_sync(
+    user_id: str,
+    service_id: str,
+    file_share_key: str = "",
+) -> None:
     """尽力清理物理删除容器对应的 FileBrowser service/用户目录。
 
-    FileBrowser 清理失败不阻断调用方删除数据库记录；只有确认 service 目录
-    删除成功后才会检查并删除空的用户父目录。
+    分享撤销和卷目录清理失败均不阻断调用方删除数据库记录；只有确认 service
+    目录删除成功后才会检查并删除空的用户父目录。
     """
     if not settings.filebrowser_enabled:
         return
     try:
-        plan = build_volume_path_plan(user_id, service_id)
         client = get_filebrowser_client()
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "初始化 FileBrowser 清理失败: %s",
+            type(exc).__name__,
+        )
+        return
+
+    if file_share_key:
+        try:
+            client.delete_share(file_share_key)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "FileBrowser 分享撤销失败: service_id=%s, %s",
+                service_id,
+                type(exc).__name__,
+            )
+
+    try:
+        plan = build_volume_path_plan(user_id, service_id)
     except Exception as exc:  # noqa: BLE001
         logger.error(
             "初始化 FileBrowser 卷清理失败: %s",
@@ -301,6 +345,20 @@ def _cleanup_volume_for_container_sync(user_id: str, service_id: str) -> None:
             plan.user_path,
             type(exc).__name__,
         )
+
+
+def _create_file_share_for_directory(
+    client: FileBrowserClient,
+    path: str,
+) -> str:
+    """Only create a share when the target is an existing directory."""
+    try:
+        resource = client.get_resource(path)
+    except FileBrowserNotFoundError:
+        return ""
+    if not resource.is_directory:
+        return ""
+    return client.create_share(path).hash
 
 
 @dataclass(frozen=True)
@@ -376,6 +434,7 @@ class ContainerStatusView:
     auto_test_id: Optional[str] = None
     source_business_id: Optional[str] = None
     task_type: Optional[int] = None
+    file_share_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -416,6 +475,7 @@ class AdminContainerView:
     auto_test_id: Optional[str] = None
     source_business_id: Optional[str] = None
     task_type: Optional[int] = None
+    file_share_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -582,10 +642,19 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
         volume_client: Optional[FileBrowserClient] = None
         prepared_volume_directories: Optional[PreparedVolumeDirectories] = None
         volumes: Optional[list[SandboxVolume]] = None
+        app_share_path: Optional[str] = None
         if settings.filebrowser_enabled:
             try:
                 volume_plan = build_volume_path_plan(params.user_id, service_id)
                 assert volume_plan is not None
+                app_share_path = next(
+                    (
+                        mount.filebrowser_path
+                        for mount in volume_plan.mount_paths
+                        if mount.mount_path == "/app"
+                    ),
+                    None,
+                )
                 volume_client = get_filebrowser_client()
                 assert volume_client is not None
                 prepared_volume_directories = await asyncio.to_thread(
@@ -756,6 +825,31 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                         container_id,
                     )
                 raise ExternalDependencyError("提交 Git 初始化最终状态失败") from exc
+
+        if volume_client is not None and app_share_path is not None:
+            try:
+                file_share_key = await asyncio.to_thread(
+                    _create_file_share_for_directory,
+                    volume_client,
+                    app_share_path,
+                )
+                if file_share_key:
+                    async with session_scope() as session:
+                        saved = await ContainerRepository(session).update_file_share_key(
+                            service_id,
+                            file_share_key,
+                        )
+                    if not saved:
+                        logger.warning(
+                            "FileBrowser 分享 key 未能写入容器记录: service_id=%s",
+                            service_id,
+                        )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "FileBrowser 分享创建失败，继续创建容器且不保存 key: service_id=%s, error=%s",
+                    service_id,
+                    type(exc).__name__,
+                )
 
         return CreatedContainer(
             container_id=container_id,
@@ -1316,6 +1410,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         auto_test_id=row.auto_test_id,
         source_business_id=row.source_business_id,
         task_type=row.task_type,
+        file_share_url=_build_file_share_url(row.file_share_key),
     )
 
 
@@ -1346,6 +1441,7 @@ def _stopped_status_view(row: ContainerRow) -> ContainerStatusView:
         auto_test_id=row.auto_test_id,
         source_business_id=row.source_business_id,
         task_type=row.task_type,
+        file_share_url=_build_file_share_url(row.file_share_key),
     )
 
 
@@ -1784,6 +1880,7 @@ async def permanent_delete(service_id: str) -> None:
             )
             container_id = row.container_id
             service_id = row.service_id
+            file_share_key = row.file_share_key
             try:
                 await get_opensandbox_client().delete(container_id)
             except SandboxNotFoundError:
@@ -1791,7 +1888,11 @@ async def permanent_delete(service_id: str) -> None:
                 pass
             except Exception as exc:
                 _raise_backend_service_error("删除容器", exc)
-            await cleanup_volume_for_container(row.user_id, row.service_id)
+            await cleanup_volume_for_container(
+                row.user_id,
+                row.service_id,
+                file_share_key,
+            )
             await repo.delete(container_id)
     get_git_session_store().discard_session(service_id)
 
@@ -2398,6 +2499,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         auto_test_id=row.auto_test_id,
         source_business_id=row.source_business_id,
         task_type=row.task_type,
+        file_share_url=_build_file_share_url(row.file_share_key),
     )
 
 

@@ -9,6 +9,7 @@ __all__ = [
     "FileBrowserResource",
     "FileBrowserItem",
     "FileBrowserItems",
+    "FileBrowserShare",
 ]
 
 
@@ -54,3 +55,11 @@ class FileBrowserItems:
     def is_empty(self) -> bool:
         """判断目录是否没有文件和子目录。"""
         return not self.files and not self.folders
+
+
+@dataclass(frozen=True)
+class FileBrowserShare:
+    """`POST /api/share` 返回的分享标识。"""
+
+    hash: str
+    raw: Mapping[str, Any] = field(default_factory=dict)

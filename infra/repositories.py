@@ -77,6 +77,15 @@ class ContainerRepository:
         )
         return getattr(result, "rowcount", 0) == 1
 
+    async def update_file_share_key(self, service_id: str, file_share_key: str) -> bool:
+        """Persist the FileBrowser share hash for a service ID."""
+        result = await self._session.execute(
+            update(Container)
+            .where(Container.service_id == service_id)
+            .values(file_share_key=file_share_key)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
     async def exists(self, container_id: str) -> bool:
         return await self.get(container_id) is not None
 

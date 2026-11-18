@@ -70,6 +70,12 @@ class Container(Base):
     expiration_hours: Mapped[int] = mapped_column(Integer)
     deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     stop_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    file_share_key: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        default="",
+        server_default="",
+    )
 
 
 class GitCredentialRow(Base):

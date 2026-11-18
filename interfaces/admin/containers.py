@@ -247,6 +247,7 @@ def _container_response(view: container_service.AdminContainerView) -> AdminCont
         service_id=view.service_id,
         api_url=view.api_url,
         api_token=view.api_token,
+        file_share_url=view.file_share_url,
         container_id=view.container_id,
         type=view.container_type,
         image=view.image,
