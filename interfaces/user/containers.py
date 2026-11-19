@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from application import container
 from domain.models import ContainerType
@@ -20,6 +20,8 @@ from interfaces.common_container_routes import register_container_action_routes
 from interfaces.common import api_responses
 from interfaces.user.schemas import (
     ContainerIdsResponse,
+    ContainerFilesItem,
+    ContainerFilesResponse,
     ContainerStatusListResponse,
     ContainerStatusResponse,
     CreateContainerRequest,
@@ -144,6 +146,34 @@ async def query_container_statuses(
         container_type=container_type,
     )
     return ContainerStatusListResponse(containers=[_to_status_response(view) for view in views])
+
+
+@router.get(
+    "/files",
+    response_model=ContainerFilesResponse,
+    operation_id="list_user_container_files",
+    responses=api_responses("成功", 200, 400, 403, 502),
+)
+async def list_user_container_files(user_id: str) -> ContainerFilesResponse:
+    """查询指定用户的全部文件分享链接。"""
+    views = await container.list_user_container_files(user_id)
+    return ContainerFilesResponse(
+        containers=[
+            ContainerFilesItem(
+                service_id=view.service_id,
+                type=view.container_type,
+                status=view.status,
+                git_fin_status=view.git_fin_status,
+                expires_at=view.expires_at,
+                file_share_url=view.file_share_url,
+                gitee_user=view.gitee_user,
+                gitee_repository=view.gitee_repository,
+                gitee_url=view.gitee_url,
+                gitee_branch=view.gitee_branch,
+            )
+            for view in views
+        ]
+    )
 
 
 @router.get(

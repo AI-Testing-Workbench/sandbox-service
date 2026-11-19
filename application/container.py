@@ -109,6 +109,7 @@ __all__ = [
     "CreateContainerParams",
     "CreatedContainer",
     "ContainerStatusView",
+    "UserContainerFilesView",
     "ExpirationView",
     "AdminContainerView",
     "ContainerLimitView",
@@ -133,6 +134,7 @@ __all__ = [
     "set_expiration",
     "map_container_id",
     "query_container_ids",
+    "list_user_container_files",
     "list_orphan_container_ids",
     "delete_orphan_containers",
     "delete_sandboxes_by_pod_names",
@@ -435,6 +437,22 @@ class ContainerStatusView:
     source_business_id: Optional[str] = None
     task_type: Optional[int] = None
     file_share_url: str = ""
+
+
+@dataclass(frozen=True)
+class UserContainerFilesView:
+    """User-safe file service summary projected from the administrator view."""
+
+    service_id: str
+    container_type: str
+    status: str
+    git_fin_status: str
+    expires_at: Optional[str]
+    file_share_url: str
+    gitee_user: str
+    gitee_repository: str
+    gitee_url: str
+    gitee_branch: Optional[str]
 
 
 @dataclass(frozen=True)
@@ -1993,6 +2011,55 @@ async def query_container_statuses(
         )
         service_ids = [row.service_id for row in rows]
     return [await get_status(service_id) for service_id in service_ids]
+
+
+async def list_user_container_files(user_id: str) -> list[UserContainerFilesView]:
+    """List a user's retained file-bearing containers using admin runtime semantics."""
+    if not user_id or not user_id.strip():
+        raise InvalidArgumentError("user_id 不能为空")
+    ensure_user_not_blacklisted(user_id)
+
+    async with session_scope() as session:
+        rows = await ContainerRepository(session).list_for_user(user_id)
+
+    views: list[UserContainerFilesView] = []
+    for row in rows:
+        if row.deleted_at is not None:
+            views.append(
+                UserContainerFilesView(
+                    service_id=row.service_id,
+                    container_type=row.container_type,
+                    status="expired",
+                    git_fin_status=get_public_git_fin_status(row.git_fin_status),
+                    expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
+                    file_share_url=_build_file_share_url(row.file_share_key),
+                    gitee_user=row.gitee_user,
+                    gitee_repository=row.gitee_repository,
+                    gitee_url=row.gitee_url,
+                    gitee_branch=row.gitee_branch,
+                )
+            )
+            continue
+        try:
+            admin_view = await _to_admin_view(row)
+        except ContainerNotFoundError:
+            # Match the admin batch endpoint: skip an active row whose backend vanished.
+            continue
+        views.append(
+            UserContainerFilesView(
+                service_id=admin_view.service_id,
+                container_type=admin_view.container_type,
+                status=admin_view.status.value,
+                git_fin_status=admin_view.git_fin_status,
+                expires_at=admin_view.expires_at,
+                file_share_url=admin_view.file_share_url,
+                gitee_user=admin_view.gitee_user,
+                gitee_repository=admin_view.gitee_repository,
+                gitee_url=admin_view.gitee_url,
+                gitee_branch=admin_view.gitee_branch,
+            )
+        )
+    return views
 
 
 async def list_orphan_container_ids() -> list[str]:

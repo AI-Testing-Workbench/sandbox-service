@@ -24,6 +24,8 @@ __all__ = [
     "ContainerStatusResponse",
     "ContainerStatusListResponse",
     "ContainerIdsResponse",
+    "ContainerFilesItem",
+    "ContainerFilesResponse",
     "MapContainerRequest",
     "MapContainerResponse",
     "AdminCheckRequest",
@@ -105,6 +107,27 @@ class ContainerStatusListResponse(BaseModel):
 
 class ContainerIdsResponse(BaseModel):
     service_ids: list[str] = Field(description="云端沙箱 ID 列表")
+
+
+class ContainerFilesItem(BaseModel):
+    service_id: str = Field(description="云端沙箱服务 ID")
+    type: str = Field(description="云端沙箱类型")
+    status: str = Field(description="云端沙箱状态")
+    git_fin_status: str = Field(description="Git 初始化最终状态")
+    expires_at: str | None = Field(description="云端沙箱预计删除时间")
+    file_share_url: str = Field(
+        description="云端沙箱产物共享链接",
+    )
+    gitee_user: str = Field(description="码云用户名")
+    gitee_repository: str = Field(description="码云仓库")
+    gitee_url: str = Field(description="码云仓库地址")
+    gitee_branch: str | None = Field(description="码云仓库分支")
+
+
+class ContainerFilesResponse(BaseModel):
+    """用户全部文件分享链接响应。"""
+
+    containers: list[ContainerFilesItem] = Field(description="云端沙箱文件分享链接响应清单")
 
 
 class MapContainerRequest(BaseModel):

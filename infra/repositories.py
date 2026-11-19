@@ -127,6 +127,15 @@ class ContainerRepository:
         stmt = stmt.order_by(Container.created_at.desc())
         return list(await self._session.scalars(stmt))
 
+    async def list_for_user(self, user_id: str) -> list[Container]:
+        """Return all retained records for one user, including business-deleted rows."""
+        stmt = (
+            select(Container)
+            .where(Container.user_id == user_id)
+            .order_by(Container.created_at.desc())
+        )
+        return list(await self._session.scalars(stmt))
+
     async def count_active(
         self,
         user_id: Optional[str] = None,
