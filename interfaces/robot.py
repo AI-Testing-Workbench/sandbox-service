@@ -28,6 +28,7 @@ class SetApiTokenRequest(BaseModel):
     response_model=None,
     operation_id="robot_set_api_token",
     responses=api_responses("成功 (无内容)", 204, 400, 404),
+    deprecated=True,
 )
 async def set_api_token(service_id: str, request: SetApiTokenRequest) -> Response:
     """为指定的 云端沙箱 设置 TestAgent 的 API Token。"""

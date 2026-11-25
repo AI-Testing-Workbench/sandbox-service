@@ -21,6 +21,7 @@ from zoneinfo import ZoneInfo
 
 from config import Constants, get_delete_failed_container, settings
 from application import container as _container
+from application.testagent_auth import fill_missing_api_tokens
 from application.testagent_sessions import get_session_counts
 from domain.errors import (
     ContainerNotFoundError,
@@ -709,6 +710,7 @@ async def run_cycle() -> list[str]:
 async def _run_cycle() -> list[str]:
     done: list[str] = []
     steps: tuple[Callable[[], Awaitable[object]], ...] = (
+        fill_missing_api_tokens,
         expire_containers,
         delete_failed_containers,
         purge_containers,

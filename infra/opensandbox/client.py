@@ -58,6 +58,7 @@ __all__ = [
     "OpenSandboxClient",
     "OpenSandboxError",
     "normalize_log_text",
+    "rewrite_loopback_endpoint",
     "SandboxFailedError",
     "SandboxNotFoundError",
 ]
@@ -355,7 +356,7 @@ class OpenSandboxClient:
                 DEFAULT_EXECD_PORT,
                 False,
             )
-            endpoint.endpoint = _rewrite_loopback_endpoint(endpoint.endpoint)
+            endpoint.endpoint = rewrite_loopback_endpoint(endpoint.endpoint)
             metrics_service = factory.create_metrics_service(endpoint)
             get_metrics = getattr(metrics_service, "get_metrics")
             return await get_metrics(container_id)
@@ -534,8 +535,8 @@ def _to_timezone_iso(value: datetime) -> str:
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
-def _rewrite_loopback_endpoint(endpoint: str) -> str:
-    """将 OpenSandbox 返回的 loopback execd 地址改为客户端可达的服务主机。"""
+def rewrite_loopback_endpoint(endpoint: str) -> str:
+    """Rewrite loopback endpoints for callers inside the service container."""
     parsed = urlsplit(endpoint)
     if not parsed.netloc:
         parsed = urlsplit(f"//{endpoint}")

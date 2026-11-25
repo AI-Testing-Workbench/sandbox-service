@@ -1857,7 +1857,7 @@ async def _persist_stop_intent(service_id: str, container_id: str) -> None:
         row = await repo.get_by_service_id(service_id)
         if row is None or row.deleted_at is not None or row.container_id != container_id:
             raise ContainerNotFoundError("云端沙箱不存在")
-        if row.stop_at is None and not await repo.set_stop_intent(container_id, _now_iso()):
+        if not await repo.set_stop_intent(container_id, row.stop_at or _now_iso()):
             raise ContainerNotFoundError("云端沙箱不存在")
 
 
@@ -1965,8 +1965,10 @@ async def _rebuild_backend(
                         if replacement is not None
                         else None
                     ),
-                    clear_api_token=replacement is not None,
-                    reset_renew_count=replacement is not None,
+                    clear_api_token=True,
+                    reset_renew_count=(
+                        replacement is not None or restore_data is not None
+                    ),
                 ):
                     raise ContainerNotFoundError("云端沙箱记录已变化，无法更新后端 ID")
         except Exception as exc:  # noqa: BLE001

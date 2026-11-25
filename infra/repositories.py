@@ -77,6 +77,27 @@ class ContainerRepository:
         )
         return getattr(result, "rowcount", 0) == 1
 
+    async def set_api_token_if_missing(
+        self,
+        *,
+        service_id: str,
+        expected_container_id: str,
+        api_token: str,
+    ) -> bool:
+        """Set an automatically fetched token only for its unchanged live backend."""
+        result = await self._session.execute(
+            update(Container)
+            .where(
+                Container.service_id == service_id,
+                Container.container_id == expected_container_id,
+                Container.api_token == "",
+                Container.deleted_at.is_(None),
+                Container.stop_at.is_(None),
+            )
+            .values(api_token=api_token)
+        )
+        return getattr(result, "rowcount", 0) == 1
+
     async def update_file_share_key(self, service_id: str, file_share_key: str) -> bool:
         """Persist the FileBrowser share hash for a service ID."""
         result = await self._session.execute(
@@ -181,6 +202,7 @@ class ContainerRepository:
         if container is not None:
             container.deleted_at = deleted_at
             container.stop_at = deleted_at
+            container.api_token = ""
 
     async def business_restore(
         self,
@@ -188,20 +210,22 @@ class ContainerRepository:
         created_at: str,
         expiration_hours: int,
     ) -> None:
-        """业务恢复：清除 `deleted_at`，重写 `created_at` 与 `expiration_hours`。"""
+        """业务恢复：开启新的有效期并清零续期计数。"""
         container = await self.get(container_id)
         if container is not None:
             container.deleted_at = None
             container.stop_at = None
             container.created_at = created_at
             container.expiration_hours = expiration_hours
+            container.renew_count = 0
+            container.api_token = ""
 
     async def set_stop_intent(self, container_id: str, stop_at: str) -> bool:
         """Persist an intentional Stop before deleting the remote sandbox."""
         result = await self._session.execute(
             update(Container)
             .where(Container.container_id == container_id, Container.deleted_at.is_(None))
-            .values(stop_at=stop_at)
+            .values(stop_at=stop_at, api_token="")
         )
         return getattr(result, "rowcount", 0) == 1
 

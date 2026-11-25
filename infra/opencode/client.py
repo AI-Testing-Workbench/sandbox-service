@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
+from collections.abc import Mapping
 from typing import Any, Optional
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
@@ -15,6 +18,7 @@ __all__ = [
     "OpenCodeClient",
     "OpenCodeInvalidResponseError",
     "OpenCodeRouteNotFoundError",
+    "OpenCodeServerAuthClient",
     "OpenCodeUnavailableError",
 ]
 
@@ -42,12 +46,12 @@ class OpenCodeRouteNotFoundError(OpenCodeError):
 
 
 class OpenCodeClient:
-    """使用 OpenCode Basic Auth 规范的只读 HTTP 客户端。"""
+    """使用 OpenCode Basic Auth 凭据的只读 HTTP 客户端。"""
 
     def __init__(
         self,
         api_url: str,
-        api_token: str,
+        api_token: Optional[str] = None,
         *,
         timeout: float = _REQUEST_TIMEOUT_SECONDS,
         transport: Optional[httpx.AsyncBaseTransport] = None,
@@ -75,8 +79,13 @@ class OpenCodeClient:
             (parsed.scheme, parsed.netloc, parsed.path.rstrip("/"), "", "")
         )
         self._base_query = parse_qsl(parsed.query, keep_blank_values=True)
+        headers = (
+            {"Authorization": f"Basic {api_token}"}
+            if api_token
+            else None
+        )
         self._client = httpx.AsyncClient(
-            auth=httpx.BasicAuth("opencode", api_token),
+            headers=headers,
             timeout=httpx.Timeout(timeout),
             transport=transport,
             follow_redirects=False,
@@ -92,7 +101,7 @@ class OpenCodeClient:
         self,
         path: str,
         *,
-        params: Optional[dict[str, str | int | bool]] = None,
+        params: Optional[Mapping[Any, Any]] = None,
     ) -> Any:
         """请求 JSON 响应并分类错误；日志中不记录凭据或敏感内容。"""
         url = f"{self._base_url}/{path.lstrip('/')}"
@@ -131,3 +140,46 @@ class OpenCodeClient:
             return response.json()
         except (ValueError, UnicodeDecodeError) as exc:
             raise OpenCodeInvalidResponseError("OpenCode 上游返回了非法 JSON") from exc
+
+
+class OpenCodeServerAuthClient:
+    """Fetch and validate the server-issued Base64 Basic credential."""
+
+    def __init__(
+        self,
+        api_url: str,
+        *,
+        timeout: float = _REQUEST_TIMEOUT_SECONDS,
+        transport: Optional[httpx.AsyncBaseTransport] = None,
+    ) -> None:
+        self._client = OpenCodeClient(
+            api_url,
+            api_token=None,
+            timeout=timeout,
+            transport=transport,
+        )
+
+    async def get_token(self) -> str:
+        """Request Auth without credentials and return its original token string."""
+        async with self._client as client:
+            payload = await client.get_json("/testagent/server/auth")
+        if not isinstance(payload, Mapping):
+            raise OpenCodeInvalidResponseError("OpenCode Auth 响应格式非法")
+        username = payload.get("username")
+        token = payload.get("token")
+        if username != "opencode" or not isinstance(token, str) or not token:
+            raise OpenCodeInvalidResponseError("OpenCode Auth 凭据格式非法")
+        try:
+            encoded = token.encode("ascii")
+            decoded = base64.b64decode(encoded, validate=True)
+            credential = decoded.decode("utf-8")
+        except (UnicodeEncodeError, UnicodeDecodeError, binascii.Error, ValueError) as exc:
+            raise OpenCodeInvalidResponseError(
+                "OpenCode Auth Token 不是有效的 Base64 凭据"
+            ) from exc
+        if base64.b64encode(decoded) != encoded:
+            raise OpenCodeInvalidResponseError("OpenCode Auth Token 不是规范的 Base64 凭据")
+        token_username, separator, _ = credential.partition(":")
+        if not separator or token_username != username:
+            raise OpenCodeInvalidResponseError("OpenCode Auth Token 用户名不匹配")
+        return token

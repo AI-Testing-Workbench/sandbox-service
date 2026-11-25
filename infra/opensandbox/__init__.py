@@ -9,6 +9,7 @@ from infra.opensandbox.client import (
     OpenSandboxError,
     SandboxFailedError,
     SandboxNotFoundError,
+    rewrite_loopback_endpoint,
 )
 from infra.opensandbox.types import (
     CreatedSandbox,
@@ -23,6 +24,7 @@ __all__ = [
     "OpenSandboxError",
     "SandboxFailedError",
     "SandboxNotFoundError",
+    "rewrite_loopback_endpoint",
     "CreatedSandbox",
     "SandboxEndpoint",
     "SandboxMetrics",

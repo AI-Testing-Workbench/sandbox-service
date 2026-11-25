@@ -16,7 +16,7 @@ from domain.errors import (
     TestAgentUnavailableError,
 )
 from infra.db import session_scope
-from infra.opensandbox.client import OpenSandboxError
+from infra.opensandbox import OpenSandboxError, rewrite_loopback_endpoint
 from infra.opencode import (
     OpenCodeAuthError,
     OpenCodeInvalidResponseError,
@@ -57,6 +57,9 @@ async def get_session_counts(
         container_id = row.container_id
         api_token = row.api_token
 
+    if not api_token:
+        raise TestAgentAuthFailedError("OpenCode 上游鉴权失败")
+
     try:
         endpoint = await container_service.get_opensandbox_client().get_endpoint(
             container_id,
@@ -72,6 +75,7 @@ async def get_session_counts(
     api_url = getattr(endpoint, "endpoint", None)
     if not isinstance(api_url, str) or not api_url.strip():
         raise TestAgentUnavailableError("OpenCode API 端点不可用")
+    api_url = rewrite_loopback_endpoint(api_url)
 
     try:
         snapshot = await OpenCodeSessionClient(api_url, api_token).get_snapshot()

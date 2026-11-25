@@ -2,11 +2,17 @@
 
 from infra.opencode.client import (
     OpenCodeAuthError,
+    OpenCodeClient,
     OpenCodeInvalidResponseError,
+    OpenCodeRouteNotFoundError,
+    OpenCodeServerAuthClient,
     OpenCodeUnavailableError,
 )
 __all__ = [
     "OpenCodeAuthError",
+    "OpenCodeClient",
     "OpenCodeInvalidResponseError",
+    "OpenCodeRouteNotFoundError",
+    "OpenCodeServerAuthClient",
     "OpenCodeUnavailableError",
 ]
