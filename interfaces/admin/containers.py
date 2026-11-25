@@ -25,6 +25,8 @@ from interfaces.admin.schemas import (
     OrphanContainerDeleteRequest,
     OrphanContainerListResponse,
     PodDeleteRequest,
+    RenewSettingsRequest,
+    RenewSettingsResponse,
 )
 from interfaces.common_container_routes import register_container_action_routes
 from interfaces.common import admin_router_responses, api_responses
@@ -43,6 +45,32 @@ router = APIRouter(
     dependencies=[Depends(require_admin_access)],
     responses=admin_router_responses(),
 )
+
+
+@router.get(
+    "/renew",
+    response_model=RenewSettingsResponse,
+    responses=api_responses("成功", 200),
+)
+async def get_renew_configuration() -> RenewSettingsResponse:
+    renew_time, renew_max = await container_service.get_renew_settings()
+    return RenewSettingsResponse(renew_time=renew_time, renew_max=renew_max)
+
+
+@router.post(
+    "/renew",
+    response_model=RenewSettingsResponse,
+    status_code=200,
+    responses=api_responses("成功", 200),
+)
+async def set_renew_configuration(
+    request: RenewSettingsRequest,
+) -> RenewSettingsResponse:
+    renew_time, renew_max = await container_service.set_renew_settings(
+        request.renew_time,
+        request.renew_max,
+    )
+    return RenewSettingsResponse(renew_time=renew_time, renew_max=renew_max)
 
 
 # 管理端容器接口顺序：增加、批量获取、单项获取、日志、Start、Stop、Restart、删除、永久删除、Expiration、恢复
@@ -258,6 +286,7 @@ def _container_response(view: container_service.AdminContainerView) -> AdminCont
         gitee_branch=view.gitee_branch,
         created_at=view.created_at,
         expiration_hours=view.expiration_hours,
+        renew_count=view.renew_count,
         authorize_general_account=view.authorize_general_account,
         status=view.status.value,
         git_fin_status=view.git_fin_status,

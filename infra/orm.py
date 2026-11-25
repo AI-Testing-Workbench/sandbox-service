@@ -68,6 +68,12 @@ class Container(Base):
 
     created_at: Mapped[str] = mapped_column(String(32))
     expiration_hours: Mapped[int] = mapped_column(Integer)
+    renew_count: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=0,
+        server_default="0",
+    )
     deleted_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     stop_at: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     file_share_key: Mapped[str] = mapped_column(

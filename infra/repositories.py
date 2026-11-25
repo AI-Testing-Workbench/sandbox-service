@@ -224,6 +224,7 @@ class ContainerRepository:
         image: Optional[str] = None,
         expiration_hours: Optional[int] = None,
         clear_api_token: bool = False,
+        reset_renew_count: bool = False,
     ) -> bool:
         """Atomically replace a backend ID while preserving its service record."""
         values: dict[str, object] = {
@@ -242,6 +243,8 @@ class ContainerRepository:
             values["expiration_hours"] = expiration_hours
         if clear_api_token:
             values["api_token"] = ""
+        if reset_renew_count:
+            values["renew_count"] = 0
         result = await self._session.execute(
             update(Container)
             .where(
@@ -253,10 +256,43 @@ class ContainerRepository:
         return getattr(result, "rowcount", 0) == 1
 
     async def update_expiration(self, container_id: str, expiration_hours: int) -> None:
-        """设置业务有效时长：仅改 `expiration_hours`，不重置 `created_at`。"""
+        """手动设置有效时长并清零自动续期计数，不重置 `created_at`。"""
         container = await self.get(container_id)
         if container is not None:
             container.expiration_hours = expiration_hours
+            container.renew_count = 0
+
+    async def renew_expiration_if_unchanged(
+        self,
+        *,
+        service_id: str,
+        container_id: str,
+        created_at: str,
+        expiration_hours: int,
+        renew_count: int,
+        git_fin_status: Optional[str],
+        renew_time: int,
+    ) -> bool:
+        """原子延长一条未变化且仍有效的到期记录。"""
+        stmt = update(Container).where(
+            Container.service_id == service_id,
+            Container.container_id == container_id,
+            Container.created_at == created_at,
+            Container.expiration_hours == expiration_hours,
+            Container.renew_count == renew_count,
+            Container.deleted_at.is_(None),
+        )
+        if git_fin_status is None:
+            stmt = stmt.where(Container.git_fin_status.is_(None))
+        else:
+            stmt = stmt.where(Container.git_fin_status == git_fin_status)
+        result = await self._session.execute(
+            stmt.values(
+                expiration_hours=expiration_hours + renew_time,
+                renew_count=renew_count + 1,
+            )
+        )
+        return getattr(result, "rowcount", 0) == 1
 
     async def set_git_fin_status_if_unset(
         self,

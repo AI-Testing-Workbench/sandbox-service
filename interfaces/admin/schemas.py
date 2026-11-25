@@ -6,7 +6,7 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, StrictBool
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictInt
 
 from config import MAX_CONTAINER_EXPIRATION_HOURS, settings
 from domain.models import ContainerType
@@ -41,6 +41,8 @@ __all__ = [
     "ExpirationResponse",
     "ContainerLimitRequest",
     "ContainerLimitResponse",
+    "RenewSettingsRequest",
+    "RenewSettingsResponse",
 ]
 
 
@@ -306,3 +308,19 @@ class ContainerLimitResponse(BaseModel):
     cpu: float = Field(description="全部云端沙箱 CPU 限制，单位为核数")
     memory: int = Field(description="全部云端沙箱内存限制，单位为 Gi")
     delete_failed_container: bool = Field(description="自动删除码云创建失败的容器")
+
+
+class RenewSettingsRequest(BaseModel):
+    """自动续期设置。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    renew_time: StrictInt = Field(gt=0, description="自动续期时长，单位为小时")
+    renew_max: StrictInt = Field(gt=0, description="自动续期最大次数")
+
+
+class RenewSettingsResponse(BaseModel):
+    """自动续期设置响应。"""
+
+    renew_time: int = Field(description="自动续期时长，单位为小时")
+    renew_max: int = Field(description="自动续期最大次数")

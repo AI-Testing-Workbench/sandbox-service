@@ -11,9 +11,10 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter
 
 from application import container
+from application.testagent_sessions import get_session_counts
 from domain.models import ContainerType
 from domain.models import add_hours_to_iso
 from interfaces.common_container_routes import register_container_action_routes
@@ -26,6 +27,7 @@ from interfaces.user.schemas import (
     ContainerStatusResponse,
     CreateContainerRequest,
     CreateContainerResponse,
+    SessionCountResponse,
 )
 
 router = APIRouter(prefix="/user/containers", tags=["用户 API"])
@@ -44,6 +46,7 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
         novnc_url=view.novnc_url,
         started_at=view.started_at,
         expires_at=view.expires_at,
+        renew_count=view.renew_count,
         cpu_usage=view.cpu_usage,
         memory_usage=view.memory_usage,
         gitee_user=view.gitee_user,
@@ -53,6 +56,23 @@ def _to_status_response(view: container.ContainerStatusView) -> ContainerStatusR
         auto_test_id=view.auto_test_id,
         source_business_id=view.source_business_id,
         task_type=view.task_type,
+    )
+
+
+@router.get(
+    "/{service_id}/sessions/count",
+    response_model=SessionCountResponse,
+    responses=api_responses("成功", 200, 404, 502),
+)
+async def count_sessions(service_id: str) -> SessionCountResponse:
+    """查询指定云端服务的会话状态计数。"""
+    counts = await get_session_counts(service_id)
+    return SessionCountResponse(
+        total=counts.total,
+        idle=counts.idle,
+        busy=counts.busy,
+        retry=counts.retry,
+        unknown=counts.unknown,
     )
 
 

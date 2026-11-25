@@ -26,6 +26,7 @@ __all__ = [
     "ContainerIdsResponse",
     "ContainerFilesItem",
     "ContainerFilesResponse",
+    "SessionCountResponse",
     "MapContainerRequest",
     "MapContainerResponse",
     "AdminCheckRequest",
@@ -128,6 +129,16 @@ class ContainerFilesResponse(BaseModel):
     """用户全部文件分享链接响应。"""
 
     containers: list[ContainerFilesItem] = Field(description="云端沙箱文件分享链接响应清单")
+
+
+class SessionCountResponse(BaseModel):
+    """OpenCode 会话计数响应。"""
+
+    total: int = Field(description="会话总数")
+    idle: int = Field(description="空闲会话数")
+    busy: int = Field(description="执行中会话数")
+    retry: int = Field(description="等待重试会话数")
+    unknown: int = Field(description="无法识别的会话数")
 
 
 class MapContainerRequest(BaseModel):

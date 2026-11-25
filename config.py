@@ -40,6 +40,8 @@ __all__ = [
     "set_container_resource_limits",
     "get_delete_failed_container",
     "set_delete_failed_container",
+    "get_renew_settings",
+    "set_renew_settings",
 ]
 
 _ENV_PREFIX = "TA_SS_"
@@ -407,6 +409,8 @@ SETTINGS_KEY_CONTAINER_COUNT_LIMIT = "container_count_limit"
 SETTINGS_KEY_CONTAINER_CPU_LIMIT = "container_cpu_limit"
 SETTINGS_KEY_CONTAINER_MEMORY_LIMIT = "container_memory_limit"
 SETTINGS_KEY_DELETE_FAILED_CONTAINER = "delete_failed_container"
+SETTINGS_KEY_RENEW_TIME = "renew_time"
+SETTINGS_KEY_RENEW_MAX = "renew_max"
 
 _DEFAULT_IMAGE_SETTINGS_KEYS: dict[str, str] = {
     ContainerType.TESTAGENT_CLOUD.value: SETTINGS_KEY_DEFAULT_IMAGE_TESTAGENT_CLOUD,
@@ -538,3 +542,42 @@ async def set_delete_failed_container(value: bool) -> None:
         raise ConfigError("失败容器自动删除配置必须为布尔值")
     async with _settings_scope() as repo:
         await repo.set(SETTINGS_KEY_DELETE_FAILED_CONTAINER, str(value).lower())
+
+
+async def get_renew_settings() -> tuple[int, int]:
+    """读取自动续期时长和最大续期次数；未配置时默认返回 24/3。"""
+    async with _settings_scope() as repo:
+        renew_time_row = await repo.get(SETTINGS_KEY_RENEW_TIME)
+        renew_max_row = await repo.get(SETTINGS_KEY_RENEW_MAX)
+
+    renew_time = _positive_setting_value(renew_time_row, SETTINGS_KEY_RENEW_TIME, 24)
+    renew_max = _positive_setting_value(renew_max_row, SETTINGS_KEY_RENEW_MAX, 3)
+    return renew_time, renew_max
+
+
+async def set_renew_settings(renew_time: int, renew_max: int) -> tuple[int, int]:
+    """在同一事务中持久化自动续期的两项设置。"""
+    if isinstance(renew_time, bool) or not isinstance(renew_time, int) or renew_time <= 0:
+        raise ConfigError("renew_time 必须为正整数")
+    if isinstance(renew_max, bool) or not isinstance(renew_max, int) or renew_max <= 0:
+        raise ConfigError("renew_max 必须为正整数")
+
+    async with _settings_scope() as repo:
+        await repo.set(SETTINGS_KEY_RENEW_TIME, str(renew_time))
+        await repo.set(SETTINGS_KEY_RENEW_MAX, str(renew_max))
+    return renew_time, renew_max
+
+
+def _positive_setting_value(row: object, key: str, default: int) -> int:
+    if row is None:
+        return default
+    value = getattr(row, "value", None)
+    if not isinstance(value, str):
+        raise ConfigError(f"数据库中的 {key} 配置非法: {value!r}")
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise ConfigError(f"数据库中的 {key} 配置非法: {value!r}") from exc
+    if parsed <= 0 or str(parsed) != value:
+        raise ConfigError(f"数据库中的 {key} 配置非法: {value!r}")
+    return parsed

@@ -26,6 +26,9 @@ __all__ = [
     "GitCredentialConflictError",
     "LimitReachedError",
     "ExternalDependencyError",
+    "TestAgentAuthFailedError",
+    "TestAgentUnavailableError",
+    "TestAgentInvalidResponseError",
 ]
 
 
@@ -164,3 +167,21 @@ class ExternalDependencyError(AppError):
 
     http_status = 502
     code = "external_dependency"
+
+
+class TestAgentAuthFailedError(ExternalDependencyError):
+    """OpenCode 上游拒绝凭据（HTTP 502，调用方并未经过本地认证）。"""
+
+    code = "testagent_auth_failed"
+
+
+class TestAgentUnavailableError(ExternalDependencyError):
+    """OpenCode 上游不可用（HTTP 502）。"""
+
+    code = "testagent_unavailable"
+
+
+class TestAgentInvalidResponseError(ExternalDependencyError):
+    """OpenCode 上游响应或版本无法识别（HTTP 502）。"""
+
+    code = "testagent_invalid_response"

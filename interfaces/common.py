@@ -117,6 +117,7 @@ class ContainerRuntimeResponse(BaseModel):
     endpoint: Optional[str] = Field(default=None, description="云端沙箱 SSH 访问端点")
     started_at: Optional[str] = Field(default=None, description="云端沙箱启动时间")
     expires_at: Optional[str] = Field(default=None, description="云端沙箱预计删除时间")
+    renew_count: int = Field(description="已自动续期的次数")
     api_url: Optional[str] = Field(default=None, description="云端沙箱中 TestAgent 的 API 地址")
     api_token: str = Field(default="", description="云端沙箱中 TestAgent 的 API Token")
     file_share_url: str = Field(default="", description="云端沙箱产物共享链接")

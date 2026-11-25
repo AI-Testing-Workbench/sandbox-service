@@ -56,6 +56,8 @@ from config import set_container_count_limit as _cfg_set_count_limit
 from config import set_container_resource_limits as _cfg_set_resource_limits
 from config import get_delete_failed_container as _cfg_get_delete_failed_container
 from config import set_delete_failed_container as _cfg_set_delete_failed_container
+from config import get_renew_settings as _cfg_get_renew_settings
+from config import set_renew_settings as _cfg_set_renew_settings
 from domain.errors import (
     BusinessConflictError,
     ContainerNotFoundError,
@@ -111,6 +113,7 @@ __all__ = [
     "ContainerStatusView",
     "UserContainerFilesView",
     "ExpirationView",
+    "RenewalCandidate",
     "AdminContainerView",
     "ContainerLimitView",
     "AdminStateView",
@@ -132,6 +135,10 @@ __all__ = [
     "restore",
     "permanent_delete",
     "set_expiration",
+    "get_renew_settings",
+    "set_renew_settings",
+    "get_expired_renewal_candidate",
+    "auto_renew_expired_container",
     "map_container_id",
     "query_container_ids",
     "list_user_container_files",
@@ -419,6 +426,7 @@ class ContainerStatusView:
     container_id: str
     service_id: str
     status: ContainerStatus
+    renew_count: int = 0
     container_type: str = ContainerType.TESTAGENT_CLOUD.value
     endpoint: Optional[str] = None
     started_at: Optional[str] = None
@@ -463,6 +471,17 @@ class ExpirationView:
 
 
 @dataclass(frozen=True)
+class RenewalCandidate:
+    """上游查询后用于校验自动续期条件的容器快照。"""
+
+    service_id: str
+    container_id: str
+    created_at: str
+    expiration_hours: int
+    renew_count: int
+
+
+@dataclass(frozen=True)
 class AdminContainerView:
     """管理端容器完整视图，合并持久化业务字段和运行时字段。"""
 
@@ -477,6 +496,7 @@ class AdminContainerView:
     api_token: str
     created_at: str
     expiration_hours: int
+    renew_count: int
     authorize_general_account: bool
     status: ContainerStatus
     endpoint: Optional[str]
@@ -785,6 +805,7 @@ async def create_container(params: CreateContainerParams) -> CreatedContainer:
                         image=image,
                         created_at=created_at,
                         expiration_hours=expiration_hours,
+                        renew_count=0,
                         authorize_general_account=params.authorize_general_account is True,
                         auto_test_id=params.auto_test_id,
                         source_business_id=params.source_business_id,
@@ -1418,6 +1439,7 @@ async def _get_status_for_row(row: ContainerRow) -> ContainerStatusView:
         novnc_url=await _novnc_url(container_id, row.container_type),
         started_at=status.transitioned_at,
         expires_at=add_hours_to_iso(row.created_at, row.expiration_hours),
+        renew_count=row.renew_count,
         cpu_usage=cpu_usage,
         memory_usage=memory_usage,
         gitee_url=row.gitee_url,
@@ -1446,6 +1468,7 @@ def _stopped_status_view(row: ContainerRow) -> ContainerStatusView:
         container_id=row.container_id,
         service_id=row.service_id,
         status=resolve_container_status(row.git_fin_status, lifecycle_status),
+        renew_count=row.renew_count,
         container_type=row.container_type,
         started_at=None,
         api_url=None,
@@ -1598,6 +1621,94 @@ async def business_delete_if_expired(container_id: str) -> bool:
                 return False
             service_id = current.service_id
         return await _business_delete_locked(service_id)
+
+
+async def get_renew_settings() -> tuple[int, int]:
+    """通过配置层读取自动续期设置。"""
+    return await _cfg_get_renew_settings()
+
+
+async def set_renew_settings(renew_time: int, renew_max: int) -> tuple[int, int]:
+    """在续期决策使用的同一生命周期锁下更新策略。"""
+    async with lifecycle_guard():
+        return await _cfg_set_renew_settings(renew_time, renew_max)
+
+
+async def get_expired_renewal_candidate(
+    container_id: str,
+) -> Optional[RenewalCandidate]:
+    """查询 OpenCode 会话前重新核验容器是否符合续期条件。"""
+    async with lifecycle_guard():
+        _, renew_max = await _cfg_get_renew_settings()
+        async with session_scope() as session:
+            row = await ContainerRepository(session).get(container_id)
+            if (
+                row is None
+                or row.deleted_at is not None
+                or row.stop_at is not None
+                or row.expiration_hours <= 0
+                or row.renew_count >= renew_max
+                or (
+                    isinstance(row.git_fin_status, str)
+                    and row.git_fin_status.startswith("failed_")
+                )
+            ):
+                return None
+            try:
+                expires_at = add_hours_to_iso(row.created_at, row.expiration_hours)
+                if expires_at is None or datetime.fromisoformat(expires_at) > _now():
+                    return None
+            except (TypeError, ValueError):
+                logger.exception("自动续期候选时间字段非法，跳过容器: %s", container_id)
+                return None
+            return RenewalCandidate(
+                service_id=row.service_id,
+                container_id=row.container_id,
+                created_at=row.created_at,
+                expiration_hours=row.expiration_hours,
+                renew_count=row.renew_count,
+            )
+
+
+async def auto_renew_expired_container(candidate: RenewalCandidate) -> bool:
+    """策略允许时，原子延长未变化且已到期的服务有效期。"""
+    async with lifecycle_guard():
+        renew_time, renew_max = await _cfg_get_renew_settings()
+        async with session_scope() as session:
+            repo = ContainerRepository(session)
+            row = await repo.get_by_service_id(candidate.service_id)
+            if (
+                row is None
+                or row.container_id != candidate.container_id
+                or row.created_at != candidate.created_at
+                or row.expiration_hours != candidate.expiration_hours
+                or row.renew_count != candidate.renew_count
+                or row.deleted_at is not None
+                or row.stop_at is not None
+                or row.expiration_hours <= 0
+                or row.renew_count >= renew_max
+                or (
+                    isinstance(row.git_fin_status, str)
+                    and row.git_fin_status.startswith("failed_")
+                )
+            ):
+                return False
+            try:
+                expires_at = add_hours_to_iso(row.created_at, row.expiration_hours)
+                if expires_at is None or datetime.fromisoformat(expires_at) > _now():
+                    return False
+            except (TypeError, ValueError):
+                logger.exception("自动续期提交时发现非法时间字段: %s", candidate.container_id)
+                return False
+            return await repo.renew_expiration_if_unchanged(
+                service_id=row.service_id,
+                container_id=row.container_id,
+                created_at=row.created_at,
+                expiration_hours=row.expiration_hours,
+                renew_count=row.renew_count,
+                git_fin_status=row.git_fin_status,
+                renew_time=renew_time,
+            )
 
 
 async def business_delete_failed_container(
@@ -1855,6 +1966,7 @@ async def _rebuild_backend(
                         else None
                     ),
                     clear_api_token=replacement is not None,
+                    reset_renew_count=replacement is not None,
                 ):
                     raise ContainerNotFoundError("云端沙箱记录已变化，无法更新后端 ID")
         except Exception as exc:  # noqa: BLE001
@@ -2551,6 +2663,7 @@ async def _to_admin_view(row: ContainerRow) -> AdminContainerView:
         gitee_branch=row.gitee_branch,
         created_at=row.created_at,
         expiration_hours=row.expiration_hours,
+        renew_count=row.renew_count,
         authorize_general_account=bool(row.authorize_general_account),
         status=status,
         git_fin_status=get_public_git_fin_status(row.git_fin_status),
@@ -2586,6 +2699,7 @@ async def _get_admin_runtime(row: ContainerRow) -> ContainerStatusView:
             endpoint=cached.endpoint,
             api_url=cached.api_url,
             started_at=cached.started_at,
+            renew_count=row.renew_count,
             cpu_usage=cached.cpu_usage,
             memory_usage=cached.memory_usage,
             auto_test_id=row.auto_test_id,
@@ -2600,6 +2714,7 @@ async def _get_admin_runtime(row: ContainerRow) -> ContainerStatusView:
             container_id=container_id,
             service_id=row.service_id,
             status=cached_status,
+            renew_count=row.renew_count,
             auto_test_id=row.auto_test_id,
             source_business_id=row.source_business_id,
             task_type=row.task_type,

@@ -21,6 +21,13 @@ from zoneinfo import ZoneInfo
 
 from config import Constants, get_delete_failed_container, settings
 from application import container as _container
+from application.testagent_sessions import get_session_counts
+from domain.errors import (
+    ContainerNotFoundError,
+    TestAgentAuthFailedError,
+    TestAgentInvalidResponseError,
+    TestAgentUnavailableError,
+)
 from domain.models import (
     ContainerStatus,
     get_public_git_fin_status,
@@ -89,13 +96,13 @@ def _now() -> datetime:
 # T7.2 业务过期检查（独立；可被管理 API 调用）
 # ---------------------------------------------------------------------------
 async def expire_containers() -> list[str]:
-    """`created_at + expiration_hours` 到期的活跃容器执行业务删除（Stop + 写 deleted_at）。
+    """检查活跃容器到期状态，仅为存在 busy/retry 会话的容器续期。
 
-    - `expiration_hours == 0`（永不过期）跳过；幂等（已业务删除的不再处理）。
-    - 单容器失败记录日志并继续，不影响整体扫描。
-    - 返回本次处理的容器 ID 列表。
+    失败容器和续期次数耗尽的容器沿用现有删除流程。上游鉴权失败或不可用时执行业务删除；
+    响应格式非法时延后处理，不将其误判为空会话列表。
     """
     expired: list[str] = []
+    renewed: list[str] = []
 
     # 只收集候选 ID；每个候选在生命周期锁内用新事务重新读取。
     async with session_scope() as session:
@@ -105,6 +112,40 @@ async def expire_containers() -> list[str]:
 
     for container_id in candidate_ids:
         try:
+            candidate = await _container.get_expired_renewal_candidate(container_id)
+            if candidate is None:
+                if await _container.business_delete_if_expired(container_id):
+                    expired.append(container_id)
+                continue
+
+            try:
+                counts = await get_session_counts(
+                    candidate.service_id,
+                    expected_container_id=candidate.container_id,
+                )
+            except ContainerNotFoundError:
+                continue
+            except (TestAgentAuthFailedError, TestAgentUnavailableError) as exc:
+                logger.warning(
+                    "OpenCode 会话查询失败，按到期策略业务删除: %s [%s]",
+                    candidate.service_id,
+                    exc.code,
+                )
+                if await _container.business_delete_if_expired(container_id):
+                    expired.append(container_id)
+                continue
+            except TestAgentInvalidResponseError as exc:
+                logger.error(
+                    "OpenCode 会话响应非法，延期处理到期容器: %s [%s]",
+                    candidate.service_id,
+                    exc.code,
+                )
+                continue
+
+            if counts.busy > 0 or counts.retry > 0:
+                if await _container.auto_renew_expired_container(candidate):
+                    renewed.append(container_id)
+                continue
             if await _container.business_delete_if_expired(container_id):
                 expired.append(container_id)
         except OpenSandboxError as exc:
@@ -119,6 +160,8 @@ async def expire_containers() -> list[str]:
             )
     if expired:
         logger.info("业务删除检查: 业务删除 %d 个", len(expired))
+    if renewed:
+        logger.info("会话感知自动续期: 延长 %d 个容器", len(renewed))
     return expired
 
 
