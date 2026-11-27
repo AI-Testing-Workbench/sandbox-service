@@ -17,12 +17,15 @@ import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable, Optional, cast
+from urllib.parse import urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
+
+import httpx
 
 from config import Constants, get_delete_failed_container, settings
 from application import container as _container
 from application.testagent_auth import fill_missing_api_tokens
-from application.testagent_sessions import get_session_counts
+from application.testagent_sessions import SessionCounts, get_session_counts
 from domain.errors import (
     ContainerNotFoundError,
     TestAgentAuthFailedError,
@@ -36,7 +39,11 @@ from domain.models import (
     resolve_container_status,
 )
 from infra.db import session_scope
-from infra.opensandbox.client import OpenSandboxError, SandboxNotFoundError
+from infra.opensandbox.client import (
+    OpenSandboxError,
+    SandboxNotFoundError,
+    rewrite_loopback_endpoint,
+)
 from infra.opensandbox.types import SandboxMetrics
 from infra.repositories import ContainerRepository
 
@@ -61,6 +68,7 @@ __all__ = [
 ]
 
 _TZ = ZoneInfo(Constants.TIMEZONE.value)
+_TASK_RUNNING_TIMEOUT_SECONDS = 15.0
 
 #: 进程内运行状态缓存：container_id -> 业务状态（v4 §13.2；管理 API 读取，不落库）
 _status_cache: dict[str, ContainerStatus] = {}
@@ -97,10 +105,10 @@ def _now() -> datetime:
 # T7.2 业务过期检查（独立；可被管理 API 调用）
 # ---------------------------------------------------------------------------
 async def expire_containers() -> list[str]:
-    """检查活跃容器到期状态，仅为存在 busy/retry 会话的容器续期。
+    """检查到期容器；OpenCode 活跃会话或运行任务均可触发续期。
 
     失败容器和续期次数耗尽的容器沿用现有删除流程。上游鉴权失败或不可用时执行业务删除；
-    响应格式非法时延后处理，不将其误判为空会话列表。
+    响应格式非法时延后处理，不将其误判为空会话列表。OpenCode 查询未命中时再检查任务信号。
     """
     expired: list[str] = []
     renewed: list[str] = []
@@ -119,6 +127,8 @@ async def expire_containers() -> list[str]:
                     expired.append(container_id)
                 continue
 
+            session_counts: Optional[SessionCounts] = None
+            session_error: Optional[Exception] = None
             try:
                 counts = await get_session_counts(
                     candidate.service_id,
@@ -126,27 +136,42 @@ async def expire_containers() -> list[str]:
                 )
             except ContainerNotFoundError:
                 continue
-            except (TestAgentAuthFailedError, TestAgentUnavailableError) as exc:
+            except Exception as exc:  # noqa: BLE001 Try the independent task signal as well.
+                session_error = exc
+            else:
+                session_counts = counts
+
+            if session_counts is not None and (
+                session_counts.busy > 0 or session_counts.retry > 0
+            ):
+                if await _container.auto_renew_expired_container(candidate):
+                    renewed.append(container_id)
+                continue
+
+            if await _task_is_running(candidate):
+                if await _container.auto_renew_expired_container(candidate):
+                    renewed.append(container_id)
+                continue
+
+            if isinstance(session_error, (TestAgentAuthFailedError, TestAgentUnavailableError)):
                 logger.warning(
                     "OpenCode 会话查询失败，按到期策略业务删除: %s [%s]",
                     candidate.service_id,
-                    exc.code,
+                    session_error.code,
                 )
                 if await _container.business_delete_if_expired(container_id):
                     expired.append(container_id)
                 continue
-            except TestAgentInvalidResponseError as exc:
+            if isinstance(session_error, TestAgentInvalidResponseError):
                 logger.error(
                     "OpenCode 会话响应非法，延期处理到期容器: %s [%s]",
                     candidate.service_id,
-                    exc.code,
+                    session_error.code,
                 )
                 continue
+            if session_error is not None:
+                raise session_error
 
-            if counts.busy > 0 or counts.retry > 0:
-                if await _container.auto_renew_expired_container(candidate):
-                    renewed.append(container_id)
-                continue
             if await _container.business_delete_if_expired(container_id):
                 expired.append(container_id)
         except OpenSandboxError as exc:
@@ -162,8 +187,67 @@ async def expire_containers() -> list[str]:
     if expired:
         logger.info("业务删除检查: 业务删除 %d 个", len(expired))
     if renewed:
-        logger.info("会话感知自动续期: 延长 %d 个容器", len(renewed))
+        logger.info("自动续期: 延长 %d 个容器", len(renewed))
     return expired
+
+
+async def _task_is_running(candidate: _container.RenewalCandidate) -> bool:
+    """Check the task-running endpoint on the candidate's current container."""
+    try:
+        endpoint = await _container.get_opensandbox_client().get_endpoint(
+            candidate.container_id,
+            3000,
+        )
+        endpoint_url = getattr(endpoint, "endpoint", None)
+        headers = getattr(endpoint, "headers", None)
+        if not isinstance(endpoint_url, str) or not endpoint_url.strip():
+            return False
+        if not isinstance(headers, dict):
+            return False
+
+        if "://" not in endpoint_url:
+            # noinspection HttpUrlsUsage
+            endpoint_url = f"http://{endpoint_url}"
+        original = urlsplit(endpoint_url)
+        if original.scheme not in {"http", "https"} or not original.netloc:
+            return False
+        endpoint_url = rewrite_loopback_endpoint(endpoint_url)
+        if "://" not in endpoint_url:
+            endpoint_url = f"{original.scheme}://{endpoint_url}"
+        parsed = urlsplit(endpoint_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.hostname is None
+            or parsed.username is not None
+            or parsed.password is not None
+        ):
+            return False
+        task_url = urlunsplit(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                f"{parsed.path.rstrip('/')}/task/running",
+                parsed.query,
+                "",
+            )
+        )
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(_TASK_RUNNING_TIMEOUT_SECONDS),
+            follow_redirects=False,
+        ) as client:
+            response = await client.get(task_url, headers=headers)
+        if response.status_code != 200:
+            return False
+        payload = response.json()
+        return isinstance(payload, dict) and payload.get("running") is True
+    except Exception as exc:  # noqa: BLE001 Task probing is best effort.
+        logger.debug(
+            "任务运行状态探测失败: %s (%s)",
+            candidate.service_id,
+            type(exc).__name__,
+        )
+        return False
 
 
 async def delete_failed_containers() -> list[str]:
